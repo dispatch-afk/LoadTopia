@@ -105,9 +105,14 @@ after the load was awarded elsewhere returns `409`.
 Pure domain function `isCarrierEligibleForLoad(carrier, load)` →
 `{ eligible, reasons: EligibilityReason[] }`. Checks (extensible):
 
-`CARRIER_COMPANY_INACTIVE`, `NOT_A_CARRIER`, `PROFILE_MISSING`,
-`PROFILE_NOT_ELIGIBLE`, `PROFILE_UNVERIFIED`, `EQUIPMENT_INCOMPATIBLE`,
+`NOT_A_CARRIER`, `CARRIER_COMPANY_INACTIVE`, `PROFILE_MISSING`,
+`PROFILE_NOT_ELIGIBLE`, `CARRIER_NOT_OPERATING`, `EQUIPMENT_INCOMPATIBLE`,
 `SERVICE_AREA_MISMATCH`, `LOAD_NOT_ON_MARKET`, `LOAD_ALREADY_AWARDED`.
+
+`CarrierProfile.marketplaceEligibility` (`PENDING → ELIGIBLE | INELIGIBLE |
+SUSPENDED`) folds verification state into a single flag: editing the profile
+resets it to `PENDING`; a passing verification (or an admin override) sets
+`ELIGIBLE`. `PROFILE_NOT_ELIGIBLE` therefore also covers "not yet verified".
 
 - The load board **hard-filters** to loads the carrier's equipment + service area
   are compatible with. Access to the board at all requires
@@ -153,7 +158,7 @@ Pure domain function `isCarrierEligibleForLoad(carrier, load)` →
   string carried into carrier-profile + admin + health output.
 - `POST /api/carrier/profile/verify` runs it; on `verified` + active authority →
   `verificationStatus = VERIFIED`, `marketplaceEligibility = ELIGIBLE`. Admin can
-  override eligibility (`PATCH /api/admin/carrier-profiles/:id`).
+  override eligibility (`PATCH /api/admin/carrier-profiles/:companyId`).
 
 ## API conventions
 
@@ -187,12 +192,15 @@ same thread, `200` if the payload matches, else `409`); the compare-and-set awar
 
 ## Auditability
 
-`audit_logs` rows for `load.post`, `pricing.snapshot`, `offer.created`,
-`offer.countered`, `offer.rejected`, `offer.withdrawn`, `offer.expired`,
-`offer.accepted`, `load.awarded`, `load.assigned`, `carrier_profile.updated`,
-`carrier_profile.verified`, `carrier_profile.eligibility_changed`. Plus the
-immutable `offer_events` (negotiation history) and `load_events` (lifecycle).
-No secrets/credentials in any payload; acting user recorded where applicable.
+`audit_logs` rows for `load.post`, `load.assign`, `pricing.snapshot`,
+`offer.create`, `offer.counter`, `offer.reject`, `offer.withdraw`,
+`offer.accept`, `carrier_profile.updated`, `carrier_profile.verified`,
+`marketplace.eligibility.override`. The award itself is captured by
+`offer.accept` + the `load_events` STATUS_CHANGED → AWARDED row. Lazy offer
+**expiry** is recorded as an immutable `offer_events` `EXPIRED` row
+(`actorUserId = null`), not an audit row — it is a system action with no HTTP
+request behind it. No secrets/credentials in any payload; acting user recorded
+where applicable.
 
 ## Frontend
 
@@ -205,8 +213,10 @@ No secrets/credentials in any payload; acting user recorded where applicable.
   current amount, status, history, Counter/Reject/Accept, awarded carrier + final
   amount); `/loads` shows marketplace status + active-offer count; pricing snapshot
   shown on the load; "Get estimate" action.
-- **Admin:** `/admin/marketplace` (carrier eligibility list + override; marketplace
-  + provider status). Minimal — no analytics platform.
+- **Admin:** API only in M2 — `GET /api/admin/carrier-profiles`,
+  `PATCH /api/admin/carrier-profiles/:companyId` (eligibility override),
+  `GET /api/admin/marketplace/overview` (load/offer/profile counts + mock-flagged
+  provider health). A staff web console is deferred; no analytics platform.
 - Nav is permission-aware (`marketplace:browse` → "Marketplace"). UI reflects
   server state; no optimistic "it worked" before the API confirms; handles
   loading / empty / validation / auth / conflict / expired-offer / already-awarded

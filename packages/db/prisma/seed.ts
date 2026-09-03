@@ -1,9 +1,9 @@
 /**
  * Development seed — clearly-labelled MOCK data only. Never run against production.
  *
- * Creates one shipper company with a working admin login, a small location book,
- * one piece of equipment, and a single DRAFT load so the shipper workflow can be
- * explored immediately. Idempotent (safe to re-run).
+ * Creates one shipper company (login below) with a location book, equipment and a
+ * DRAFT load, plus — for the Milestone 2 marketplace — a POSTED load, an eligible
+ * carrier company with its own login and marketplace profile. Idempotent.
  */
 import { PrismaClient } from "@prisma/client";
 import { hash } from "@node-rs/argon2";
@@ -12,6 +12,7 @@ const prisma = new PrismaClient();
 
 const DEV_EMAIL = "dispatch@loadtopia.local";
 const DEV_PASSWORD = "loadtopia-dev-password";
+const CARRIER_EMAIL = "driver@loadtopia.local";
 
 async function main() {
   if (process.env.NODE_ENV === "production") {
@@ -126,8 +127,108 @@ async function main() {
     });
   }
 
+  // --- Milestone 2: a POSTED load + an eligible carrier ---------------------
+  const postedRef = `PALFOO-POST1`;
+  let posted = await prisma.load.findFirst({ where: { referenceNumber: postedRef } });
+  if (!posted) {
+    posted = await prisma.load.create({
+      data: {
+        referenceNumber: postedRef,
+        status: "POSTED",
+        shipperCompanyId: shipper.id,
+        createdByUserId: user.id,
+        updatedByUserId: user.id,
+        originLocationId: origin.id,
+        destinationLocationId: dest.id,
+        equipmentType: "REEFER",
+        mode: "FTL",
+        commodity: "Refrigerated produce",
+        weightLbs: 41000,
+        distanceMeters: 148000,
+        driveTimeMinutes: 110,
+        routingProvider: "mock",
+        routedAt: new Date(),
+        postedAt: new Date(),
+      },
+    });
+    await prisma.loadEvent.create({
+      data: { loadId: posted.id, type: "CREATED", toStatus: "DRAFT", actorUserId: user.id },
+    });
+    await prisma.loadEvent.create({
+      data: {
+        loadId: posted.id,
+        type: "STATUS_CHANGED",
+        fromStatus: "DRAFT",
+        toStatus: "POSTED",
+        actorUserId: user.id,
+      },
+    });
+  }
+
+  const carrierPasswordHash = await hash(DEV_PASSWORD, {
+    memoryCost: 19456,
+    timeCost: 2,
+    parallelism: 1,
+  });
+  const carrier = await prisma.company.upsert({
+    where: { type_name: { type: "CARRIER", name: "[MOCK] Sunrise Carriers" } },
+    update: {},
+    create: {
+      type: "CARRIER",
+      name: "[MOCK] Sunrise Carriers",
+      loadNumberPrefix: "SUNCAR",
+      mcNumber: "MC100001",
+      dotNumber: "DOT2000001",
+      addressLine1: "500 Fleet Rd",
+      city: "Chicago",
+      state: "IL",
+      postalCode: "60607",
+      country: "US",
+    },
+  });
+  const carrierUser = await prisma.user.upsert({
+    where: { email: CARRIER_EMAIL },
+    update: { passwordHash: carrierPasswordHash },
+    create: {
+      email: CARRIER_EMAIL,
+      passwordHash: carrierPasswordHash,
+      firstName: "Dev",
+      lastName: "Driver",
+    },
+  });
+  await prisma.membership.upsert({
+    where: { userId_companyId: { userId: carrierUser.id, companyId: carrier.id } },
+    update: { isActive: true },
+    create: { userId: carrierUser.id, companyId: carrier.id, role: "CARRIER", isPrimary: true },
+  });
+  await prisma.carrierProfile.upsert({
+    where: { companyId: carrier.id },
+    update: {},
+    create: {
+      companyId: carrier.id,
+      legalName: "[MOCK] Sunrise Carriers LLC",
+      mcNumber: "MC100001",
+      dotNumber: "DOT2000001",
+      operatingStatus: "ACTIVE",
+      // Pre-marked eligible so the marketplace is explorable immediately. In a
+      // real flow the carrier runs POST /api/carrier/profile/verify.
+      marketplaceEligibility: "ELIGIBLE",
+      verificationStatus: "VERIFIED",
+      verificationProvider: "mock",
+      verificationIsMock: true,
+      verificationNote:
+        "[MOCK] seed data — NOT FMCSA / DOT / SAFER / insurance / government verification",
+      verifiedAt: new Date(),
+      equipmentTypes: ["REEFER", "DRY_VAN"],
+      serviceAreaStates: ["IL", "WI", "IN"],
+    },
+  });
+
   console.log("Seeded [MOCK] dev data. Sign in with:");
-  console.table([{ email: DEV_EMAIL, password: DEV_PASSWORD, company: shipper.name }]);
+  console.table([
+    { role: "shipper", email: DEV_EMAIL, password: DEV_PASSWORD, company: shipper.name },
+    { role: "carrier", email: CARRIER_EMAIL, password: DEV_PASSWORD, company: carrier.name },
+  ]);
 }
 
 async function findLocation(companyId: string, name: string): Promise<string | null> {
