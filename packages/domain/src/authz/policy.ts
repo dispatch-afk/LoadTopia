@@ -11,6 +11,16 @@ export class AuthorizationError extends Error {
   }
 }
 
+/** Thrown when a resource exists but is outside the actor's company scope. */
+export class ResourceScopeError extends Error {
+  readonly code = "NOT_FOUND";
+  readonly statusCode = 404;
+  constructor(message = "Resource not found") {
+    super(message);
+    this.name = "ResourceScopeError";
+  }
+}
+
 export function hasPermission(actor: AuthenticatedActor, permission: Permission): boolean {
   return roleHasPermission(actor.role, permission);
 }
@@ -21,19 +31,37 @@ export function assertPermission(actor: AuthenticatedActor, permission: Permissi
   }
 }
 
+export function isAdmin(actor: AuthenticatedActor): boolean {
+  return actor.role === UserRole.ADMIN;
+}
+
+/**
+ * Company-scope guard for every company-owned resource (locations, equipment,
+ * loads, members). A non-admin actor may only touch resources whose owning
+ * company is their ACTIVE company. Violations raise {@link ResourceScopeError}
+ * (→ 404) so a caller cannot probe for the existence of another company's data
+ * by iterating UUIDs.
+ */
+export function isSameCompany(actor: AuthenticatedActor, resourceCompanyId: string): boolean {
+  return isAdmin(actor) || (actor.companyId !== null && actor.companyId === resourceCompanyId);
+}
+
+export function assertCompanyScope(actor: AuthenticatedActor, resourceCompanyId: string): void {
+  if (!isSameCompany(actor, resourceCompanyId)) {
+    throw new ResourceScopeError();
+  }
+}
+
 /** Minimal projection of a load needed for access decisions. */
 export interface LoadAccessView {
   shipperCompanyId: string;
   carrierCompanyId: string | null;
 }
 
-function isAdmin(actor: AuthenticatedActor): boolean {
-  return actor.role === UserRole.ADMIN;
-}
-
 /**
- * Read access: platform staff see everything; the owning shipper sees its loads;
- * an assigned carrier sees loads it has been awarded/assigned.
+ * Read access: platform staff see everything; the owning shipper sees its loads.
+ * (An assigned carrier will be able to read awarded loads from Milestone 2 —
+ * `carrierCompanyId` is never set in Milestone 1.)
  */
 export function canReadLoad(actor: AuthenticatedActor, load: LoadAccessView): boolean {
   if (isAdmin(actor)) return true;
@@ -50,14 +78,15 @@ export function canModifyLoad(actor: AuthenticatedActor, load: LoadAccessView): 
 }
 
 export function assertCanReadLoad(actor: AuthenticatedActor, load: LoadAccessView): void {
-  if (!canReadLoad(actor, load)) throw new AuthorizationError();
+  if (!canReadLoad(actor, load)) throw new ResourceScopeError();
 }
 
 export function assertCanModifyLoad(actor: AuthenticatedActor, load: LoadAccessView): void {
+  if (!canReadLoad(actor, load)) throw new ResourceScopeError();
   if (!canModifyLoad(actor, load)) throw new AuthorizationError();
 }
 
 /** A company's own record is readable/editable by its members (or staff). */
 export function canAccessCompany(actor: AuthenticatedActor, companyId: string): boolean {
-  return isAdmin(actor) || actor.companyId === companyId;
+  return isSameCompany(actor, companyId);
 }

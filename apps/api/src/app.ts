@@ -9,7 +9,11 @@ import { providersPlugin } from "./plugins/providers";
 import { requestContextPlugin } from "./plugins/request-context";
 import { securityPlugin } from "./plugins/security";
 import { authRoutes } from "./modules/auth/auth.routes";
+import { companiesRoutes } from "./modules/companies/companies.routes";
+import { equipmentRoutes } from "./modules/equipment/equipment.routes";
 import { healthRoutes } from "./modules/health/health.routes";
+import { loadsRoutes } from "./modules/loads/loads.routes";
+import { locationsRoutes } from "./modules/locations/locations.routes";
 
 export interface BuildAppOptions {
   env?: Env;
@@ -54,6 +58,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     async (api) => {
       await api.register(healthRoutes);
       await api.register(authRoutes);
+      await api.register(companiesRoutes);
+      await api.register(locationsRoutes);
+      await api.register(equipmentRoutes);
+      await api.register(loadsRoutes);
     },
     { prefix: "/api" },
   );

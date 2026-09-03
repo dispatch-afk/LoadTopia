@@ -23,6 +23,25 @@ export const forbidden = (msg = "You do not have permission to perform this acti
 export const notFound = (msg = "Resource not found") => new AppError(404, "NOT_FOUND", msg);
 export const conflict = (msg: string) => new AppError(409, "CONFLICT", msg);
 
+const DOMAIN_ERROR_CODES = new Set([
+  "FORBIDDEN",
+  "NOT_FOUND",
+  "VALIDATION_ERROR",
+  "INVALID_LOAD_TRANSITION",
+  "COMPANY_CONTEXT",
+]);
+
+function isDomainError(
+  error: unknown,
+): error is { code: string; message: string; statusCode?: number } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    typeof (error as { code?: unknown }).code === "string" &&
+    DOMAIN_ERROR_CODES.has((error as { code: string }).code)
+  );
+}
+
 export function registerErrorHandler(app: FastifyInstance): void {
   app.setNotFoundHandler((request: FastifyRequest, reply: FastifyReply) => {
     reply.status(404).send({
@@ -57,6 +76,26 @@ export function registerErrorHandler(app: FastifyInstance): void {
       }
       return reply.status(error.statusCode).send({
         error: { code: error.code, message: error.message, requestId, details: error.details },
+      });
+    }
+
+    // Domain errors (@loadtopia/domain) carry a stable `code` and, usually, a
+    // `statusCode`. They are framework-free so they are duck-typed here rather
+    // than imported. `LoadTransitionError` has no statusCode → treat as 409.
+    if (isDomainError(error)) {
+      const status =
+        typeof error.statusCode === "number"
+          ? error.statusCode
+          : error.code === "INVALID_LOAD_TRANSITION"
+            ? 409
+            : 400;
+      const details =
+        "issues" in error && Array.isArray((error as { issues?: unknown[] }).issues)
+          ? (error as { issues: unknown[] }).issues
+          : undefined;
+      request.log.info({ requestId, code: error.code }, error.message);
+      return reply.status(status).send({
+        error: { code: error.code, message: error.message, requestId, details },
       });
     }
 

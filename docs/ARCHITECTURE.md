@@ -1,9 +1,13 @@
 # LoadTopia — Architecture
 
-_Last updated: Phase 0._
+_Baseline: Phase 0. Milestone 1 additions: see [`MILESTONE-1.md`](MILESTONE-1.md)._
 
 This document explains the system design and the reasoning behind the significant
 technology choices. It is the reference for how the codebase is meant to grow.
+Milestone 1 (companies, membership-based authz + active-company context,
+locations, equipment, load CRUD + lifecycle + routing) builds on this foundation
+without changing it — details and the DB migration are in
+[`MILESTONE-1.md`](MILESTONE-1.md).
 
 ---
 

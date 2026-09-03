@@ -6,13 +6,14 @@ LoadTopia provides the technology, pricing intelligence, trust, and transaction
 infrastructure that lets a shipper and a carrier transact directly — making a
 broker unnecessary when the two can deal with each other.
 
-> **Status: Phase 0 — Engineering foundation.**
-> The marketplace, load creation, pricing intelligence, carrier matching, offers,
-> booking, tracking, documents, and payments are **not built yet**. This
-> repository currently contains the production-oriented skeleton: monorepo,
-> database schema + migration, authentication/authorization, the external-provider
-> abstraction layer (mock implementations only), a health endpoint, and a test
-> harness. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status: Milestone 1 — Foundation.**
+> Shippers can manage freight internally: companies, team members (membership-based
+> auth + multi-company switching), a reusable location book, equipment, and loads
+> with a server-authoritative `DRAFT ⇄ POSTED → CANCELLED` lifecycle, immutable
+> load events, and routing (miles + drive time) via the provider abstraction.
+> **Not built:** the marketplace, carrier visibility, offers, pricing, tracking,
+> documents, and payments. Loads are private to the owning shipper company.
+> See [`docs/MILESTONE-1.md`](docs/MILESTONE-1.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -83,8 +84,8 @@ pnpm docker:up
 pnpm db:generate
 pnpm db:migrate               # first run creates the local database schema
 
-# 5. (optional) seed clearly-labelled MOCK dev data
-pnpm db:seed
+# 5. (optional) seed clearly-labelled MOCK dev data + a working login
+pnpm db:seed                  # dispatch@loadtopia.local / loadtopia-dev-password
 
 # 6. Run the API and web app
 pnpm dev                      # api on :4000, web on :3000
@@ -95,6 +96,14 @@ Verify:
 ```bash
 curl -s http://localhost:4000/api/health | jq
 ```
+
+Then open http://localhost:3000 and sign in. The web app reverse-proxies
+`/api/*` to `API_ORIGIN` (default `http://localhost:4000`).
+
+> **Windows/ARM:** run the database-backed workflow (migrate, seed, integration
+> tests, the API server) in WSL2 or a container — Prisma ships no windows-arm64
+> engine. `pnpm install`, `typecheck`, `lint`, `test` (unit), `build`, and
+> `db:generate` run natively.
 
 ---
 

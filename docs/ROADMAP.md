@@ -16,20 +16,22 @@ offers, booking, tracking, documents, payments.
 
 ---
 
-## Milestone 1 — Companies, users, and loads (CRUD, no marketplace)
+## Milestone 1 — Companies, users, and loads (CRUD, no marketplace) ✅
 
-- Company profile + team management (`user:invite`, membership roles).
-- Location book (pickup/dropoff addresses) with geocoding via `GeocodingProvider`.
-- Equipment records.
-- **Load creation & lifecycle**: shipper creates a `DRAFT` load, edits it, and
-  drives it through the state machine via intent endpoints (`/loads/:id/post`,
-  `/cancel`, …). Every transition writes a `load_events` row in-transaction.
-- Route distance/duration populated via `RoutingProvider` on load save.
-- Authorization: `canReadLoad` / `canModifyLoad` enforced; audit logging on
-  mutations.
-- Full integration test coverage of the load lifecycle.
+- ✅ Company profile + team management; membership-based authorization; active
+  company context on the session; `POST /api/auth/switch-company`.
+- ✅ Location book with geocoding via `GeocodingProvider`.
+- ✅ Equipment records.
+- ✅ **Load CRUD + lifecycle**: `DRAFT ⇄ POSTED → CANCELLED` via intent
+  endpoints; every transition writes an immutable `load_events` row
+  in-transaction; append-only enforced by a DB trigger.
+- ✅ Route distance/drive time via `RoutingProvider` on create + relevant edits.
+- ✅ Authorization enforced server-side; cross-company access → 404 (IDOR);
+  audit logging on mutations.
+- ✅ Integration test coverage of the lifecycle, authz, and IDOR.
 
-_No carrier visibility yet — loads are private to the shipper company._
+Loads are private to the shipper company — no carrier visibility. See
+[`MILESTONE-1.md`](MILESTONE-1.md).
 
 ## Milestone 2 — Marketplace & discovery
 

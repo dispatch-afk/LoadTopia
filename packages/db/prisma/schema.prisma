@@ -9,7 +9,8 @@
 //   * Money: NUMERIC(14,2) via Prisma `Decimal` — never floating point.
 //   * All snake_case table/column names via @map/@@map.
 //   * Historical/append-only tables (load_events, market_rates, audit_logs) are
-//     never updated or deleted by application code.
+//     never updated or deleted by application code. `load_events` is additionally
+//     enforced append-only by a database trigger (see the m1_foundation migration).
 
 generator client {
   provider = "prisma-client-js"
@@ -55,16 +56,27 @@ enum LoadStatus {
   CANCELLED
 }
 
+enum TransportMode {
+  FTL
+  LTL
+  PARTIAL
+}
+
 enum EquipmentType {
   DRY_VAN
   REEFER
   FLATBED
   STEP_DECK
+  CONESTOGA
+  BOX_TRUCK
   POWER_ONLY
+  HOTSHOT
+  OTHER
 }
 
 enum LoadEventType {
   CREATED
+  UPDATED
   STATUS_CHANGED
   OFFER_CREATED
   OFFER_ACCEPTED
@@ -91,17 +103,38 @@ model Company {
   name      String
   mcNumber  String?     @map("mc_number")
   dotNumber String?     @map("dot_number")
-  createdAt DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  memberships  Membership[]
-  locations    Location[]
-  equipment    Equipment[]
-  shippedLoads Load[]       @relation("ShipperLoads")
-  carriedLoads Load[]       @relation("CarrierLoads")
-  offers       LoadOffer[]
+  // Contact / address (Milestone 1). Nullable so self-service registration can
+  // create a company with just a name and fill these in later.
+  addressLine1 String? @map("address_line1")
+  addressLine2 String? @map("address_line2")
+  city         String?
+  state        String?
+  postalCode   String? @map("postal_code")
+  country      String  @default("US")
+  phone        String?
+  email        String?
+
+  // Per-company human-readable load numbering (Milestone 1).
+  // `loadNumberPrefix` is globally unique so `{prefix}-{sequence}` is globally
+  // unique without a retry loop; `loadSequence` is bumped inside the
+  // create-load transaction.
+  loadNumberPrefix String @map("load_number_prefix")
+  loadSequence     Int    @default(0) @map("load_sequence")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  memberships    Membership[]
+  activeSessions Session[]    @relation("SessionActiveCompany")
+  locations      Location[]
+  equipment      Equipment[]
+  shippedLoads   Load[]       @relation("ShipperLoads")
+  carriedLoads   Load[]       @relation("CarrierLoads")
+  offers         LoadOffer[]
 
   @@unique([type, name])
+  @@unique([loadNumberPrefix])
   @@index([type])
   @@map("companies")
 }
@@ -116,24 +149,27 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  memberships  Membership[]
-  sessions     Session[]
-  auditLogs    AuditLog[]
-  loadEvents   LoadEvent[]
-  createdLoads Load[]       @relation("LoadCreatedBy")
-  createdOffers LoadOffer[] @relation("OfferCreatedBy")
+  memberships   Membership[]
+  sessions      Session[]
+  auditLogs     AuditLog[]
+  loadEvents    LoadEvent[]
+  createdLoads  Load[]       @relation("LoadCreatedBy")
+  updatedLoads  Load[]       @relation("LoadUpdatedBy")
+  createdOffers LoadOffer[]  @relation("OfferCreatedBy")
 
   @@map("users")
 }
 
 /// Join of User <-> Company carrying the user's role WITHIN that company.
-/// A user may belong to multiple companies with different roles.
+/// A user may belong to multiple companies with different roles. `isActive`
+/// gates whether the membership can be used for authorization / company switch.
 model Membership {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId    String   @map("user_id") @db.Uuid
   companyId String   @map("company_id") @db.Uuid
   role      UserRole
   isPrimary Boolean  @default(false) @map("is_primary")
+  isActive  Boolean  @default(true) @map("is_active")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -142,68 +178,90 @@ model Membership {
 
   @@unique([userId, companyId])
   @@index([companyId])
+  @@index([userId, isActive])
   @@map("company_users")
 }
 
 /// Opaque server-side session. Only the SHA-256 hash of the token is stored.
+/// `activeCompanyId` is the company the user is currently acting on behalf of;
+/// it is always verified against an active membership on each request.
 model Session {
-  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId    String    @map("user_id") @db.Uuid
-  tokenHash String    @unique @map("token_hash")
-  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
-  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
-  ip        String?
-  userAgent String?   @map("user_agent")
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  tokenHash       String    @unique @map("token_hash")
+  activeCompanyId String?   @map("active_company_id") @db.Uuid
+  expiresAt       DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt       DateTime? @map("revoked_at") @db.Timestamptz(6)
+  ip              String?
+  userAgent       String?   @map("user_agent")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeCompany Company? @relation("SessionActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([expiresAt])
+  @@index([activeCompanyId])
   @@map("sessions")
 }
 
 // ---------------------------------------------------------------------------
-// Freight reference data
+// Company reference data (Milestone 1)
 // ---------------------------------------------------------------------------
 
+/// Reusable company location book entry. Every location belongs to exactly one
+/// company; there is no cross-company access. Coordinates come from the
+/// GeocodingProvider abstraction (mock in dev) and feed RoutingProvider.
 model Location {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  companyId    String?  @map("company_id") @db.Uuid
-  label        String?
-  addressLine1 String   @map("address_line1")
-  addressLine2 String?  @map("address_line2")
-  city         String
-  region       String
-  postalCode   String   @map("postal_code")
-  country      String   @default("US")
-  latitude     Decimal? @db.Decimal(9, 6)
-  longitude    Decimal? @db.Decimal(9, 6)
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId      String   @map("company_id") @db.Uuid
+  name           String?
+  addressLine1   String   @map("address_line1")
+  addressLine2   String?  @map("address_line2")
+  city           String
+  state          String
+  postalCode     String   @map("postal_code")
+  country        String   @default("US")
+  latitude       Decimal? @db.Decimal(9, 6)
+  longitude      Decimal? @db.Decimal(9, 6)
+  providerPlaceId String? @map("provider_place_id")
+  geocodedBy     String?  @map("geocoded_by")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  company      Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
-  originLoads  Load[]   @relation("LoadOrigin")
-  destLoads    Load[]   @relation("LoadDestination")
+  company     Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  originLoads Load[]  @relation("LoadOrigin")
+  destLoads   Load[]  @relation("LoadDestination")
 
-  @@index([companyId])
-  @@index([region, city])
+  @@index([companyId, isActive])
+  @@index([state, city])
   @@map("locations")
 }
 
+/// Carrier equipment record. Company-scoped; a company manages only its own.
 model Equipment {
-  id          String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  companyId   String        @map("company_id") @db.Uuid
-  type        EquipmentType
-  description String?
-  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId      String        @map("company_id") @db.Uuid
+  type           EquipmentType
+  name           String?
+  trailerLengthFt Int?         @map("trailer_length_ft")
+  capacityLbs    Int?          @map("capacity_lbs")
+  description    String?
+  isActive       Boolean       @default(true) @map("is_active")
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
 
-  @@index([companyId])
+  @@index([companyId, isActive])
   @@map("equipment")
 }
+
+// ---------------------------------------------------------------------------
+// Pricing placeholders — Phase 0. NOT populated, calculated, or exposed in
+// Milestone 1. Kept for future milestones; do not remove.
+// ---------------------------------------------------------------------------
 
 /// A directional origin->destination corridor. Rates are attached over time.
 model Lane {
@@ -222,6 +280,7 @@ model Lane {
 
 /// APPEND-ONLY. Each row is one observation of a rate for a lane/equipment at a
 /// point in time. Never updated or deleted — this is core pricing history.
+/// NOT used in Milestone 1.
 model MarketRate {
   id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   laneId        String        @map("lane_id") @db.Uuid
@@ -252,29 +311,41 @@ model Load {
   referenceNumber       String        @unique @map("reference_number")
   status                LoadStatus    @default(DRAFT)
   shipperCompanyId      String        @map("shipper_company_id") @db.Uuid
+  // Reserved for Milestone 2 (marketplace). Never set or exposed in Milestone 1.
   carrierCompanyId      String?       @map("carrier_company_id") @db.Uuid
   createdByUserId       String        @map("created_by_user_id") @db.Uuid
+  updatedByUserId       String?       @map("updated_by_user_id") @db.Uuid
   originLocationId      String        @map("origin_location_id") @db.Uuid
   destinationLocationId String        @map("destination_location_id") @db.Uuid
   equipmentType         EquipmentType @map("equipment_type")
+  mode                  TransportMode @default(FTL)
   commodity             String?
   weightLbs             Int?          @map("weight_lbs")
   pickupWindowStart     DateTime?     @map("pickup_window_start") @db.Timestamptz(6)
   pickupWindowEnd       DateTime?     @map("pickup_window_end") @db.Timestamptz(6)
   deliveryWindowStart   DateTime?     @map("delivery_window_start") @db.Timestamptz(6)
   deliveryWindowEnd     DateTime?     @map("delivery_window_end") @db.Timestamptz(6)
-  offeredRate           Decimal?      @map("offered_rate") @db.Decimal(14, 2)
-  bookedRate            Decimal?      @map("booked_rate") @db.Decimal(14, 2)
-  currency              String        @default("USD")
-  distanceMeters        Int?          @map("distance_meters")
-  postedAt              DateTime?     @map("posted_at") @db.Timestamptz(6)
-  cancelledAt           DateTime?     @map("cancelled_at") @db.Timestamptz(6)
-  createdAt             DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt             DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Reserved pricing placeholders (Phase 0). NOT set or exposed in Milestone 1.
+  offeredRate Decimal? @map("offered_rate") @db.Decimal(14, 2)
+  bookedRate  Decimal? @map("booked_rate") @db.Decimal(14, 2)
+  currency    String   @default("USD")
+
+  // Routing results (via RoutingProvider abstraction).
+  distanceMeters   Int?      @map("distance_meters")
+  driveTimeMinutes Int?      @map("drive_time_minutes")
+  routingProvider  String?   @map("routing_provider")
+  routedAt         DateTime? @map("routed_at") @db.Timestamptz(6)
+
+  postedAt    DateTime? @map("posted_at") @db.Timestamptz(6)
+  cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   shipperCompany Company     @relation("ShipperLoads", fields: [shipperCompanyId], references: [id], onDelete: Restrict)
   carrierCompany Company?    @relation("CarrierLoads", fields: [carrierCompanyId], references: [id], onDelete: Restrict)
   createdBy      User        @relation("LoadCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  updatedBy      User?       @relation("LoadUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
   origin         Location    @relation("LoadOrigin", fields: [originLocationId], references: [id], onDelete: Restrict)
   destination    Location    @relation("LoadDestination", fields: [destinationLocationId], references: [id], onDelete: Restrict)
   events         LoadEvent[]
@@ -282,15 +353,15 @@ model Load {
 
   @@index([status])
   @@index([shipperCompanyId, status])
+  @@index([shipperCompanyId, createdAt])
   @@index([carrierCompanyId])
   @@index([equipmentType, status])
   @@index([createdAt])
   @@map("loads")
 }
 
-/// IMMUTABLE. One row per meaningful thing that happened to a load. The
-/// application only ever INSERTs here. This is the load audit trail and a
-/// primary input to LoadTopia transaction intelligence.
+/// IMMUTABLE append-only load audit trail. Application code only ever INSERTs;
+/// a database trigger rejects UPDATE and DELETE (m1_foundation migration).
 model LoadEvent {
   id          String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   loadId      String        @map("load_id") @db.Uuid
@@ -310,6 +381,7 @@ model LoadEvent {
   @@map("load_events")
 }
 
+/// Phase 0 placeholder — NOT used in Milestone 1 (marketplace/offers).
 model LoadOffer {
   id               String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   loadId           String      @map("load_id") @db.Uuid
@@ -324,11 +396,11 @@ model LoadOffer {
   createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  load          Load        @relation(fields: [loadId], references: [id], onDelete: Cascade)
-  carrierCompany Company    @relation(fields: [carrierCompanyId], references: [id], onDelete: Cascade)
-  createdBy     User        @relation("OfferCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
-  parentOffer   LoadOffer?  @relation("OfferChain", fields: [parentOfferId], references: [id], onDelete: SetNull)
-  counterOffers LoadOffer[] @relation("OfferChain")
+  load           Load        @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  carrierCompany Company     @relation(fields: [carrierCompanyId], references: [id], onDelete: Cascade)
+  createdBy      User        @relation("OfferCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  parentOffer    LoadOffer?  @relation("OfferChain", fields: [parentOfferId], references: [id], onDelete: SetNull)
+  counterOffers  LoadOffer[] @relation("OfferChain")
 
   @@index([loadId, status])
   @@index([carrierCompanyId, status])

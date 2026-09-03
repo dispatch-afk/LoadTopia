@@ -35,9 +35,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No `version:` — pnpm/action-setup@v4 reads it from the
+      # "packageManager" field in package.json (pnpm@9.15.9).
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -64,5 +64,12 @@ jobs:
       - name: Integration tests
         run: pnpm --filter @loadtopia/api test:integration
 
+      - name: Seed (smoke — idempotent, MOCK data only)
+        run: pnpm --filter @loadtopia/db seed
+        env:
+          NODE_ENV: development
+
       - name: Build
         run: pnpm build
+        env:
+          API_ORIGIN: http://localhost:4000
