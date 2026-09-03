@@ -21,6 +21,7 @@ export function buildStatusChangeEvent(params: {
   toStatus: LoadStatus;
   actorUserId: string | null;
   note?: string;
+  data?: Record<string, unknown> | null;
 }): LoadEventDraft {
   return {
     loadId: params.loadId,
@@ -29,7 +30,23 @@ export function buildStatusChangeEvent(params: {
     toStatus: params.toStatus,
     actorUserId: params.actorUserId,
     note: params.note ?? null,
-    data: null,
+    data: params.data ?? null,
+  };
+}
+
+export function buildLoadUpdatedEvent(params: {
+  loadId: string;
+  actorUserId: string | null;
+  changedFields: string[];
+}): LoadEventDraft {
+  return {
+    loadId: params.loadId,
+    type: LoadEventType.UPDATED,
+    fromStatus: null,
+    toStatus: null,
+    actorUserId: params.actorUserId,
+    note: null,
+    data: { changedFields: params.changedFields },
   };
 }
 

@@ -25,8 +25,15 @@ export type LoadStatusTransitionMap = Readonly<Record<LoadStatus, readonly LoadS
  * later milestone.
  */
 export const LOAD_STATUS_TRANSITIONS: LoadStatusTransitionMap = {
+  // DRAFT ⇄ POSTED is the shipper-side portion used in Milestone 1. `POSTED →
+  // DRAFT` lets a shipper pull a load back to edit it (the inverse of `/post`).
   [LoadStatus.DRAFT]: [LoadStatus.POSTED, LoadStatus.CANCELLED],
-  [LoadStatus.POSTED]: [LoadStatus.OFFER_RECEIVED, LoadStatus.AWARDED, LoadStatus.CANCELLED],
+  [LoadStatus.POSTED]: [
+    LoadStatus.DRAFT,
+    LoadStatus.OFFER_RECEIVED,
+    LoadStatus.AWARDED,
+    LoadStatus.CANCELLED,
+  ],
   [LoadStatus.OFFER_RECEIVED]: [LoadStatus.AWARDED, LoadStatus.POSTED, LoadStatus.CANCELLED],
   [LoadStatus.AWARDED]: [LoadStatus.CARRIER_ASSIGNED, LoadStatus.POSTED, LoadStatus.CANCELLED],
   [LoadStatus.CARRIER_ASSIGNED]: [LoadStatus.PICKED_UP, LoadStatus.CANCELLED],

@@ -69,4 +69,18 @@ describe("load state machine", () => {
       expect(nextLoadStatuses(status)).not.toContain(status);
     }
   });
+
+  it("supports the Milestone 1 shipper-side transitions", () => {
+    // DRAFT -> POSTED -> DRAFT (withdraw to edit) -> POSTED, and cancel from either.
+    expect(canTransitionLoad(LoadStatus.DRAFT, LoadStatus.POSTED)).toBe(true);
+    expect(canTransitionLoad(LoadStatus.POSTED, LoadStatus.DRAFT)).toBe(true);
+    expect(canTransitionLoad(LoadStatus.DRAFT, LoadStatus.CANCELLED)).toBe(true);
+    expect(canTransitionLoad(LoadStatus.POSTED, LoadStatus.CANCELLED)).toBe(true);
+  });
+
+  it("still refuses a client-style jump straight to a completed/delivered state", () => {
+    expect(canTransitionLoad(LoadStatus.DRAFT, LoadStatus.COMPLETED)).toBe(false);
+    expect(canTransitionLoad(LoadStatus.DRAFT, LoadStatus.DELIVERED)).toBe(false);
+    expect(canTransitionLoad(LoadStatus.POSTED, LoadStatus.COMPLETED)).toBe(false);
+  });
 });

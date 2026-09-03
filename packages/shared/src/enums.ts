@@ -34,18 +34,31 @@ export const LoadStatus = {
 export type LoadStatus = (typeof LoadStatus)[keyof typeof LoadStatus];
 export const LOAD_STATUSES = Object.values(LoadStatus);
 
+export const TransportMode = {
+  FTL: "FTL",
+  LTL: "LTL",
+  PARTIAL: "PARTIAL",
+} as const;
+export type TransportMode = (typeof TransportMode)[keyof typeof TransportMode];
+export const TRANSPORT_MODES = Object.values(TransportMode);
+
 export const EquipmentType = {
   DRY_VAN: "DRY_VAN",
   REEFER: "REEFER",
   FLATBED: "FLATBED",
   STEP_DECK: "STEP_DECK",
+  CONESTOGA: "CONESTOGA",
+  BOX_TRUCK: "BOX_TRUCK",
   POWER_ONLY: "POWER_ONLY",
+  HOTSHOT: "HOTSHOT",
+  OTHER: "OTHER",
 } as const;
 export type EquipmentType = (typeof EquipmentType)[keyof typeof EquipmentType];
 export const EQUIPMENT_TYPES = Object.values(EquipmentType);
 
 export const LoadEventType = {
   CREATED: "CREATED",
+  UPDATED: "UPDATED",
   STATUS_CHANGED: "STATUS_CHANGED",
   OFFER_CREATED: "OFFER_CREATED",
   OFFER_ACCEPTED: "OFFER_ACCEPTED",
