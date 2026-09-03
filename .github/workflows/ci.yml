@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DATABASE_URL: postgresql://loadtopia:loadtopia_dev_pw@localhost:5432/loadtopia_test?schema=public
+  TEST_DATABASE_URL: postgresql://loadtopia:loadtopia_dev_pw@localhost:5432/loadtopia_test?schema=public
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: loadtopia
+          POSTGRES_PASSWORD: loadtopia_dev_pw
+          POSTGRES_DB: loadtopia_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U loadtopia"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Apply migrations
+        run: pnpm --filter @loadtopia/db migrate:deploy
+
+      - name: Integration tests
+        run: pnpm --filter @loadtopia/api test:integration
+
+      - name: Build
+        run: pnpm build

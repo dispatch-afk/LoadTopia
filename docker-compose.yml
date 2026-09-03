@@ -1,0 +1,33 @@
+# Local development infrastructure for LoadTopia.
+# Production runs managed PostgreSQL (e.g. AWS RDS) — this file is dev-only.
+#
+#   docker compose up -d      # start Postgres
+#   docker compose down       # stop (data persists in the named volume)
+#   docker compose down -v    # stop and DELETE all local data
+name: loadtopia
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: loadtopia-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: loadtopia
+      POSTGRES_PASSWORD: loadtopia_dev_pw
+      POSTGRES_DB: loadtopia
+      # Create the integration-test database alongside the main one.
+      POSTGRES_MULTIPLE_DATABASES: loadtopia_test
+    ports:
+      - "5432:5432"
+    volumes:
+      - loadtopia_pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loadtopia -d loadtopia"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  loadtopia_pgdata:
+    name: loadtopia_pgdata
