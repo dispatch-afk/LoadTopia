@@ -2,6 +2,7 @@ export * from "./types";
 export * from "./registry";
 export { MockRoutingProvider } from "./mock/mock-routing-provider";
 export { MockPricingProvider } from "./mock/mock-pricing-provider";
+export { MockCarrierVerificationProvider } from "./mock/mock-carrier-verification-provider";
 export {
   MockGeocodingProvider,
   MockNotificationProvider,
@@ -9,4 +10,4 @@ export {
   MockStorageProvider,
   MockTrackingProvider,
 } from "./mock/mock-misc-providers";
-export { MOCK_DISCLAIMER } from "./mock/shared";
+export { MOCK_DISCLAIMER, MOCK_VERIFICATION_DISCLAIMER } from "./mock/shared";
