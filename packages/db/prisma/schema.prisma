@@ -85,13 +85,48 @@ enum LoadEventType {
   CANCELLED
 }
 
-enum OfferStatus {
+// --- Marketplace (Milestone 2) -------------------------------------------- --
+
+enum CarrierOperatingStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum MarketplaceEligibility {
   PENDING
+  ELIGIBLE
+  INELIGIBLE
+  SUSPENDED
+}
+
+enum CarrierVerificationStatus {
+  UNVERIFIED
+  VERIFYING
+  VERIFIED
+  FAILED
+}
+
+/// The mutable status of a negotiation. The individual `OfferRound` rows are
+/// immutable; this is the single source of truth for whether a thread is live.
+enum OfferThreadStatus {
+  ACTIVE
   ACCEPTED
   REJECTED
   WITHDRAWN
-  COUNTERED
+  EXPIRED
 }
+
+enum OfferEventType {
+  CREATED
+  COUNTERED
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+  EXPIRED
+}
+
+// (The Phase 0 `OfferStatus` enum + `LoadOffer` placeholder are replaced by the
+//  Milestone 2 OfferThread / OfferRound / OfferEvent model below.)
 
 // ---------------------------------------------------------------------------
 // Identity & organizations
@@ -125,13 +160,16 @@ model Company {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  memberships    Membership[]
-  activeSessions Session[]    @relation("SessionActiveCompany")
-  locations      Location[]
-  equipment      Equipment[]
-  shippedLoads   Load[]       @relation("ShipperLoads")
-  carriedLoads   Load[]       @relation("CarrierLoads")
-  offers         LoadOffer[]
+  memberships          Membership[]
+  activeSessions       Session[]       @relation("SessionActiveCompany")
+  locations            Location[]
+  equipment            Equipment[]
+  shippedLoads         Load[]          @relation("ShipperLoads")
+  carriedLoads         Load[]          @relation("CarrierLoads")
+  carrierProfile       CarrierProfile?
+  carrierOfferThreads  OfferThread[]   @relation("ThreadCarrier")
+  proposedOfferRounds  OfferRound[]    @relation("RoundProposedByCompany")
+  offerEvents          OfferEvent[]
 
   @@unique([type, name])
   @@unique([loadNumberPrefix])
@@ -149,13 +187,15 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  memberships   Membership[]
-  sessions      Session[]
-  auditLogs     AuditLog[]
-  loadEvents    LoadEvent[]
-  createdLoads  Load[]       @relation("LoadCreatedBy")
-  updatedLoads  Load[]       @relation("LoadUpdatedBy")
-  createdOffers LoadOffer[]  @relation("OfferCreatedBy")
+  memberships         Membership[]
+  sessions            Session[]
+  auditLogs           AuditLog[]
+  loadEvents          LoadEvent[]
+  createdLoads        Load[]         @relation("LoadCreatedBy")
+  updatedLoads        Load[]         @relation("LoadUpdatedBy")
+  proposedOfferRounds OfferRound[]   @relation("RoundProposedByUser")
+  offerEvents         OfferEvent[]
+  pricingSnapshots    PricingSnapshot[]
 
   @@map("users")
 }
@@ -326,7 +366,8 @@ model Load {
   deliveryWindowStart   DateTime?     @map("delivery_window_start") @db.Timestamptz(6)
   deliveryWindowEnd     DateTime?     @map("delivery_window_end") @db.Timestamptz(6)
 
-  // Reserved pricing placeholders (Phase 0). NOT set or exposed in Milestone 1.
+  // `bookedRate` is set at award time — a direct Decimal copy of the winning
+  // offer round's amount. `offeredRate` remains a reserved placeholder (unused).
   offeredRate Decimal? @map("offered_rate") @db.Decimal(14, 2)
   bookedRate  Decimal? @map("booked_rate") @db.Decimal(14, 2)
   currency    String   @default("USD")
@@ -337,19 +378,26 @@ model Load {
   routingProvider  String?   @map("routing_provider")
   routedAt         DateTime? @map("routed_at") @db.Timestamptz(6)
 
+  // Marketplace award outcome (Milestone 2).
+  awardedOfferRoundId String?   @unique @map("awarded_offer_round_id") @db.Uuid
+  awardedAt           DateTime? @map("awarded_at") @db.Timestamptz(6)
+  assignedAt          DateTime? @map("assigned_at") @db.Timestamptz(6)
+
   postedAt    DateTime? @map("posted_at") @db.Timestamptz(6)
   cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(6)
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  shipperCompany Company     @relation("ShipperLoads", fields: [shipperCompanyId], references: [id], onDelete: Restrict)
-  carrierCompany Company?    @relation("CarrierLoads", fields: [carrierCompanyId], references: [id], onDelete: Restrict)
-  createdBy      User        @relation("LoadCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
-  updatedBy      User?       @relation("LoadUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
-  origin         Location    @relation("LoadOrigin", fields: [originLocationId], references: [id], onDelete: Restrict)
-  destination    Location    @relation("LoadDestination", fields: [destinationLocationId], references: [id], onDelete: Restrict)
-  events         LoadEvent[]
-  offers         LoadOffer[]
+  shipperCompany   Company           @relation("ShipperLoads", fields: [shipperCompanyId], references: [id], onDelete: Restrict)
+  carrierCompany   Company?          @relation("CarrierLoads", fields: [carrierCompanyId], references: [id], onDelete: Restrict)
+  createdBy        User              @relation("LoadCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  updatedBy        User?             @relation("LoadUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  origin           Location          @relation("LoadOrigin", fields: [originLocationId], references: [id], onDelete: Restrict)
+  destination      Location          @relation("LoadDestination", fields: [destinationLocationId], references: [id], onDelete: Restrict)
+  awardedOfferRound OfferRound?      @relation("LoadAwardedRound", fields: [awardedOfferRoundId], references: [id], onDelete: SetNull)
+  events           LoadEvent[]
+  offerThreads     OfferThread[]
+  pricingSnapshots PricingSnapshot[]
 
   @@index([status])
   @@index([shipperCompanyId, status])
@@ -357,6 +405,9 @@ model Load {
   @@index([carrierCompanyId])
   @@index([equipmentType, status])
   @@index([createdAt])
+  // Marketplace board: loads on market, newest first, filterable by equipment.
+  @@index([status, postedAt])
+  @@index([status, equipmentType, postedAt])
   @@map("loads")
 }
 
@@ -381,30 +432,142 @@ model LoadEvent {
   @@map("load_events")
 }
 
-/// Phase 0 placeholder — NOT used in Milestone 1 (marketplace/offers).
-model LoadOffer {
-  id               String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  loadId           String      @map("load_id") @db.Uuid
-  carrierCompanyId String      @map("carrier_company_id") @db.Uuid
-  createdByUserId  String      @map("created_by_user_id") @db.Uuid
-  status           OfferStatus @default(PENDING)
-  amount           Decimal     @db.Decimal(14, 2)
-  currency         String      @default("USD")
-  parentOfferId    String?     @map("parent_offer_id") @db.Uuid
-  message          String?
-  expiresAt        DateTime?   @map("expires_at") @db.Timestamptz(6)
-  createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+// ---------------------------------------------------------------------------
+// Marketplace — carrier profiles, offers/negotiation, pricing (Milestone 2)
+// ---------------------------------------------------------------------------
 
-  load           Load        @relation(fields: [loadId], references: [id], onDelete: Cascade)
-  carrierCompany Company     @relation(fields: [carrierCompanyId], references: [id], onDelete: Cascade)
-  createdBy      User        @relation("OfferCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
-  parentOffer    LoadOffer?  @relation("OfferChain", fields: [parentOfferId], references: [id], onDelete: SetNull)
-  counterOffers  LoadOffer[] @relation("OfferChain")
+/// One per CARRIER-type company. Holds marketplace-facing identity, self-declared
+/// capabilities, and the eligibility/verification state that gates participation.
+model CarrierProfile {
+  id                    String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId             String                    @unique @map("company_id") @db.Uuid
+  legalName             String                    @map("legal_name")
+  mcNumber              String?                   @map("mc_number")
+  dotNumber             String?                   @map("dot_number")
+  operatingStatus       CarrierOperatingStatus    @default(ACTIVE) @map("operating_status")
+  marketplaceEligibility MarketplaceEligibility   @default(PENDING) @map("marketplace_eligibility")
+  eligibilityReason     String?                   @map("eligibility_reason")
+  verificationStatus    CarrierVerificationStatus @default(UNVERIFIED) @map("verification_status")
+  verificationProvider  String?                   @map("verification_provider")
+  verificationIsMock    Boolean?                  @map("verification_is_mock")
+  verificationRef       String?                   @map("verification_ref")
+  verificationNote      String?                   @map("verification_note")
+  verifiedAt            DateTime?                 @map("verified_at") @db.Timestamptz(6)
+  /// Self-declared equipment the carrier can haul. Empty => no equipment filter.
+  equipmentTypes        EquipmentType[]           @map("equipment_types")
+  /// Self-declared operating area (2-letter state codes). Empty => nationwide.
+  serviceAreaStates     String[]                  @map("service_area_states")
+  createdAt             DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  @@index([loadId, status])
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([marketplaceEligibility])
+  @@map("carrier_profiles")
+}
+
+/// A negotiation between one carrier and one shipper-load. The container is
+/// mutable (its `status`); the `OfferRound` rows it holds are immutable.
+model OfferThread {
+  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId           String            @map("load_id") @db.Uuid
+  carrierCompanyId String            @map("carrier_company_id") @db.Uuid
+  status           OfferThreadStatus @default(ACTIVE)
+  roundCount       Int               @default(0) @map("round_count")
+  currentRoundId   String?           @unique @map("current_round_id") @db.Uuid
+  closedReason     String?           @map("closed_reason")
+  closedAt         DateTime?         @map("closed_at") @db.Timestamptz(6)
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  load           Load         @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  carrierCompany Company      @relation("ThreadCarrier", fields: [carrierCompanyId], references: [id], onDelete: Cascade)
+  currentRound   OfferRound?  @relation("ThreadCurrentRound", fields: [currentRoundId], references: [id], onDelete: SetNull)
+  rounds         OfferRound[] @relation("ThreadRounds")
+  events         OfferEvent[]
+
+  @@unique([loadId, carrierCompanyId])
   @@index([carrierCompanyId, status])
-  @@map("load_offers")
+  @@index([loadId, status])
+  @@map("offer_threads")
+}
+
+/// IMMUTABLE. One row per proposal or counter. A DB trigger rejects UPDATE and
+/// DELETE. The full commercial history of a negotiation is these rows.
+model OfferRound {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  threadId            String   @map("thread_id") @db.Uuid
+  roundNumber         Int      @map("round_number")
+  proposedByCompanyId String   @map("proposed_by_company_id") @db.Uuid
+  proposedByUserId    String   @map("proposed_by_user_id") @db.Uuid
+  amount              Decimal  @db.Decimal(14, 2)
+  currency            String   @default("USD")
+  message             String?
+  /// Deadline for the OTHER party to respond to this proposal.
+  expiresAt           DateTime @map("expires_at") @db.Timestamptz(6)
+  parentRoundId       String?  @unique @map("parent_round_id") @db.Uuid
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  thread            OfferThread  @relation("ThreadRounds", fields: [threadId], references: [id], onDelete: Cascade)
+  proposedByCompany Company      @relation("RoundProposedByCompany", fields: [proposedByCompanyId], references: [id], onDelete: Restrict)
+  proposedByUser    User         @relation("RoundProposedByUser", fields: [proposedByUserId], references: [id], onDelete: Restrict)
+  parentRound       OfferRound?  @relation("RoundChain", fields: [parentRoundId], references: [id], onDelete: SetNull)
+  childRound        OfferRound?  @relation("RoundChain")
+  currentOfThread   OfferThread? @relation("ThreadCurrentRound")
+  awardedLoad       Load?        @relation("LoadAwardedRound")
+
+  @@unique([threadId, roundNumber])
+  @@index([threadId, createdAt])
+  @@map("offer_rounds")
+}
+
+/// IMMUTABLE append-only negotiation event log (reuses loadtopia_reject_mutation).
+model OfferEvent {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  threadId       String         @map("thread_id") @db.Uuid
+  roundId        String?        @map("round_id") @db.Uuid
+  type           OfferEventType
+  actorUserId    String?        @map("actor_user_id") @db.Uuid
+  actorCompanyId String?        @map("actor_company_id") @db.Uuid
+  data           Json?
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  thread       OfferThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  actor        User?       @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorCompany Company?    @relation(fields: [actorCompanyId], references: [id], onDelete: SetNull)
+
+  @@index([threadId, createdAt])
+  @@index([type, createdAt])
+  @@map("offer_events")
+}
+
+/// IMMUTABLE. A pricing estimate produced for a load at a point in time, so a
+/// historical price is reproducible and never silently recomputed.
+model PricingSnapshot {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId          String        @map("load_id") @db.Uuid
+  provider        String
+  isMock          Boolean       @map("is_mock")
+  currency        String        @default("USD")
+  lowRate         Decimal       @map("low_rate") @db.Decimal(14, 2)
+  midRate         Decimal       @map("mid_rate") @db.Decimal(14, 2)
+  highRate        Decimal       @map("high_rate") @db.Decimal(14, 2)
+  ratePerMile     Decimal?      @map("rate_per_mile") @db.Decimal(10, 4)
+  confidence      String
+  disclaimer      String?
+  distanceMeters  Int?          @map("distance_meters")
+  equipmentType   EquipmentType @map("equipment_type")
+  originState     String        @map("origin_state")
+  destinationState String       @map("destination_state")
+  inputsHash      String?       @map("inputs_hash")
+  createdByUserId String?       @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  load      Load  @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([loadId, createdAt])
+  @@map("pricing_snapshots")
 }
 
 // ---------------------------------------------------------------------------
