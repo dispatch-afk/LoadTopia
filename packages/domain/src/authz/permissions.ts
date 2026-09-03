@@ -38,11 +38,15 @@ export const Permission = {
   LOAD_CANCEL_OWN: "load:cancel:own",
   LOAD_TRANSITION_ANY: "load:transition:any",
 
-  // Reserved for later milestones — declared now, unused by any endpoint.
-  MARKETPLACE_BROWSE: "marketplace:browse",
-  OFFER_CREATE: "offer:create",
-  OFFER_READ_OWN: "offer:read:own",
-  OFFER_ACCEPT_OWN: "offer:accept:own",
+  // Marketplace (Milestone 2)
+  MARKETPLACE_BROWSE: "marketplace:browse", // carrier: load board + load detail
+  CARRIER_PROFILE_MANAGE: "carrier:profile:manage", // carrier: own marketplace profile
+  OFFER_CREATE: "offer:create", // carrier: create offer / carrier-counter / carrier-accept
+  OFFER_MANAGE_OWN: "offer:manage:own", // carrier: withdraw own thread
+  OFFER_READ_OWN: "offer:read:own", // both: read offers within scope
+  OFFER_RESPOND: "offer:respond", // shipper: counter / accept / reject offers on own loads
+  PRICING_ESTIMATE: "pricing:estimate", // both: request a pricing estimate
+  MARKETPLACE_ADMIN: "marketplace:admin", // admin: eligibility overrides, overview
 
   // Platform staff
   ADMIN_PANEL: "admin:panel",
@@ -75,17 +79,22 @@ const SHIPPER_PERMISSIONS: readonly Permission[] = [
   Permission.LOAD_DELETE_OWN,
   Permission.LOAD_POST,
   Permission.LOAD_CANCEL_OWN,
-  // Reserved (no endpoints in M1):
+  // Marketplace (M2): manage offers on OWN posted loads; request pricing.
   Permission.OFFER_READ_OWN,
-  Permission.OFFER_ACCEPT_OWN,
+  Permission.OFFER_RESPOND,
+  Permission.PRICING_ESTIMATE,
 ];
 
 const CARRIER_PERMISSIONS: readonly Permission[] = [
   ...COMMON_COMPANY_PERMISSIONS,
-  // Reserved (no endpoints in M1) — carriers have NO access to shipper loads:
+  // Marketplace (M2). Carriers still have NO shipper-load (LOAD_*) permissions —
+  // they reach loads only through the marketplace endpoints, scoped + eligible.
   Permission.MARKETPLACE_BROWSE,
+  Permission.CARRIER_PROFILE_MANAGE,
   Permission.OFFER_CREATE,
+  Permission.OFFER_MANAGE_OWN,
   Permission.OFFER_READ_OWN,
+  Permission.PRICING_ESTIMATE,
 ];
 
 export const ROLE_PERMISSIONS: Readonly<Record<UserRole, readonly Permission[]>> = {

@@ -68,11 +68,50 @@ export const LoadEventType = {
 } as const;
 export type LoadEventType = (typeof LoadEventType)[keyof typeof LoadEventType];
 
-export const OfferStatus = {
+// --- Marketplace (Milestone 2) --------------------------------------------
+
+export const CarrierOperatingStatus = {
+  ACTIVE: "ACTIVE",
+  INACTIVE: "INACTIVE",
+} as const;
+export type CarrierOperatingStatus =
+  (typeof CarrierOperatingStatus)[keyof typeof CarrierOperatingStatus];
+
+export const MarketplaceEligibility = {
   PENDING: "PENDING",
+  ELIGIBLE: "ELIGIBLE",
+  INELIGIBLE: "INELIGIBLE",
+  SUSPENDED: "SUSPENDED",
+} as const;
+export type MarketplaceEligibility =
+  (typeof MarketplaceEligibility)[keyof typeof MarketplaceEligibility];
+
+export const CarrierVerificationStatus = {
+  UNVERIFIED: "UNVERIFIED",
+  VERIFYING: "VERIFYING",
+  VERIFIED: "VERIFIED",
+  FAILED: "FAILED",
+} as const;
+export type CarrierVerificationStatus =
+  (typeof CarrierVerificationStatus)[keyof typeof CarrierVerificationStatus];
+
+/** Mutable status of a negotiation thread (the OfferRound rows are immutable). */
+export const OfferThreadStatus = {
+  ACTIVE: "ACTIVE",
   ACCEPTED: "ACCEPTED",
   REJECTED: "REJECTED",
   WITHDRAWN: "WITHDRAWN",
-  COUNTERED: "COUNTERED",
+  EXPIRED: "EXPIRED",
 } as const;
-export type OfferStatus = (typeof OfferStatus)[keyof typeof OfferStatus];
+export type OfferThreadStatus = (typeof OfferThreadStatus)[keyof typeof OfferThreadStatus];
+export const OFFER_THREAD_STATUSES = Object.values(OfferThreadStatus);
+
+export const OfferEventType = {
+  CREATED: "CREATED",
+  COUNTERED: "COUNTERED",
+  ACCEPTED: "ACCEPTED",
+  REJECTED: "REJECTED",
+  WITHDRAWN: "WITHDRAWN",
+  EXPIRED: "EXPIRED",
+} as const;
+export type OfferEventType = (typeof OfferEventType)[keyof typeof OfferEventType];
