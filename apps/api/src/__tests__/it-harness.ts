@@ -9,9 +9,13 @@ export const SESSION_COOKIE = "loadtopia_session";
 
 /** All application tables, child-first, for TRUNCATE ... CASCADE. */
 const TABLES = [
+  "offer_events",
+  "offer_rounds",
+  "offer_threads",
+  "pricing_snapshots",
   "load_events",
-  "load_offers",
   "loads",
+  "carrier_profiles",
   "market_rates",
   "lanes",
   "equipment",

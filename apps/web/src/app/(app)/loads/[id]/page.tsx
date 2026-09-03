@@ -1,10 +1,17 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { LoadView } from "@loadtopia/shared";
+import type {
+  OfferThreadSummary,
+  OfferThreadView,
+  PricingSnapshotView,
+  LoadView,
+} from "@loadtopia/shared";
 import { ApiError, apiServer } from "@/lib/api-server";
 import { Card, PageHeader } from "@/components/ui";
 import { LoadStatusBadge } from "@/components/load-status-badge";
 import { LoadActions } from "@/components/load-actions";
+import { OfferThread } from "@/components/offer-thread";
+import { AssignCarrierButton } from "@/components/assign-carrier-button";
 import {
   fmtDateTime,
   fmtDriveTime,
@@ -13,6 +20,18 @@ import {
   fmtWindow,
   titleCase,
 } from "@/lib/format";
+
+function money(v: string | null, currency = "USD") {
+  return v == null ? "—" : new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(v));
+}
+
+async function safe<T>(p: Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await p;
+  } catch {
+    return fallback;
+  }
+}
 
 const EVENT_LABEL: Record<string, string> = {
   CREATED: "Load created",
@@ -48,6 +67,25 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
     if (err instanceof ApiError && (err.status === 404 || err.status === 400)) notFound();
     throw err;
   }
+
+  // Marketplace negotiations on this load (shipper-scoped). Best-effort so a
+  // pre-marketplace load still renders.
+  const { data: threadSummaries } = await safe(
+    apiServer<{ data: OfferThreadSummary[] }>(`/api/loads/${id}/offers`),
+    { data: [] as OfferThreadSummary[] },
+  );
+  const threads = await Promise.all(
+    threadSummaries.map((t) =>
+      safe(apiServer<OfferThreadView>(`/api/offers/threads/${t.threadId}`), null),
+    ),
+  ).then((list) => list.filter((t): t is OfferThreadView => t !== null));
+
+  const { data: pricing } = await safe(
+    apiServer<{ data: PricingSnapshotView[] }>(`/api/loads/${id}/pricing`),
+    { data: [] as PricingSnapshotView[] },
+  );
+
+  const award = load.marketplace.award;
 
   return (
     <div>
@@ -93,6 +131,73 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
               </p>
             )}
           </Card>
+
+          {(threads.length > 0 || load.marketplace.onMarket || award) && (
+            <Card className="p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-ink">
+                  Offers{" "}
+                  <span className="text-muted">
+                    ({load.marketplace.activeOfferCount} active)
+                  </span>
+                </h2>
+              </div>
+
+              {award && (
+                <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm">
+                  <p className="font-medium text-emerald-900">
+                    Awarded to {award.carrierName} · {money(award.amount, award.currency)}
+                  </p>
+                  <p className="text-xs text-emerald-800">
+                    Awarded {fmtDateTime(award.awardedAt)}
+                    {award.assignedAt
+                      ? ` · carrier assigned ${fmtDateTime(award.assignedAt)}`
+                      : ""}
+                  </p>
+                  {load.status === "AWARDED" && (
+                    <div className="mt-2">
+                      <AssignCarrierButton loadId={load.id} />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {threads.length === 0 ? (
+                <p className="text-sm text-muted">No offers yet.</p>
+              ) : (
+                <div className="space-y-3">
+                  {threads.map((t) => (
+                    <OfferThread key={t.threadId} thread={t} />
+                  ))}
+                </div>
+              )}
+            </Card>
+          )}
+
+          {pricing.length > 0 && (
+            <Card className="p-5">
+              <h2 className="mb-3 text-sm font-semibold text-ink">Pricing snapshots</h2>
+              <div className="space-y-2">
+                {pricing.map((p) => (
+                  <div key={p.id} className="rounded-lg border border-line p-3 text-sm">
+                    <p>
+                      <span className="font-medium">{money(p.midRate, p.currency)}</span>{" "}
+                      <span className="text-muted">
+                        ({money(p.lowRate, p.currency)}–{money(p.highRate, p.currency)}) ·{" "}
+                        {p.confidence} confidence
+                      </span>
+                    </p>
+                    <p className="text-xs text-muted">
+                      {p.provider}
+                      {p.isMock && " — MOCK development data, not real market pricing"} ·{" "}
+                      {fmtDateTime(p.createdAt)}
+                    </p>
+                    {p.disclaimer && <p className="mt-1 text-xs text-muted">{p.disclaimer}</p>}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
 
           <Card className="p-5">
             <h2 className="mb-4 text-sm font-semibold text-ink">Timeline</h2>

@@ -8,11 +8,15 @@ import { apiClient } from "@/lib/api-client";
 import { cn } from "@/lib/format";
 import { Spinner } from "./ui";
 
-const NAV = [
+/** Nav is filtered by the active company's permissions (server-authoritative). */
+const NAV: { href: string; label: string; permission?: string }[] = [
   { href: "/dashboard", label: "Dashboard" },
-  { href: "/loads", label: "Loads" },
-  { href: "/locations", label: "Locations" },
-  { href: "/equipment", label: "Equipment" },
+  { href: "/loads", label: "Loads", permission: "load:read:own" },
+  { href: "/marketplace", label: "Marketplace", permission: "marketplace:browse" },
+  { href: "/marketplace/offers", label: "My Offers", permission: "offer:create" },
+  { href: "/locations", label: "Locations", permission: "location:read" },
+  { href: "/equipment", label: "Equipment", permission: "equipment:read" },
+  { href: "/settings/carrier-profile", label: "Carrier Profile", permission: "carrier:profile:manage" },
   { href: "/settings/company", label: "Company" },
   { href: "/settings/members", label: "Team" },
 ];
@@ -82,7 +86,7 @@ export function AppShell({ me, children }: { me: MeResponse; children: ReactNode
         </div>
 
         <nav className="flex gap-1 overflow-x-auto px-3 py-2 lg:flex-col">
-          {NAV.map((item) => {
+          {NAV.filter((item) => !item.permission || me.permissions.includes(item.permission)).map((item) => {
             const isActive =
               pathname === item.href || pathname.startsWith(item.href + "/");
             return (
