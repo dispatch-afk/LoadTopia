@@ -39,7 +39,8 @@ describe("GET /api/health", () => {
     expect(body.status).toBe("ok");
     expect(body.checks.database.status).toBe("ok");
     expect(body.checks.providers.pricing).toMatchObject({ isMock: true, status: "ok" });
-    expect(Object.keys(body.checks.providers)).toHaveLength(7);
+    expect(body.checks.providers.carrierVerification).toMatchObject({ isMock: true, status: "ok" });
+    expect(Object.keys(body.checks.providers)).toHaveLength(8);
   });
 
   it("returns 503 and status error when the database is unreachable", async () => {
