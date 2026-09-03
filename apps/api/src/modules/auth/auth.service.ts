@@ -1,12 +1,13 @@
 import type { PrismaClient } from "@loadtopia/db";
 import {
   type LoginInput,
-  type RegisterInput,
   type MembershipView,
   type PublicUser,
+  type RegisterInput,
   roleForCompanyType,
 } from "@loadtopia/shared";
 import { permissionsForRole } from "@loadtopia/domain";
+import { generateUniqueLoadNumberPrefix } from "../../lib/company-prefix";
 import { conflict, unauthorized } from "../../lib/errors";
 import { type Argon2Params, hashPassword, verifyPassword } from "../../lib/password";
 import { generateSessionToken, hashSessionToken, sessionExpiry } from "../../lib/session";
@@ -19,6 +20,7 @@ export interface SessionContext {
 export interface AuthResult {
   user: PublicUser;
   memberships: MembershipView[];
+  activeCompanyId: string | null;
   permissions: string[];
   /** Raw session token — set as an httpOnly cookie by the caller, never logged. */
   token: string;
@@ -41,6 +43,27 @@ function toPublicUser(u: {
   };
 }
 
+type MembershipRow = {
+  id: string;
+  companyId: string;
+  role: MembershipView["role"];
+  isPrimary: boolean;
+  isActive: boolean;
+  company: { name: string; type: MembershipView["companyType"] };
+};
+
+function toViews(rows: MembershipRow[]): MembershipView[] {
+  return rows.map((m) => ({
+    membershipId: m.id,
+    companyId: m.companyId,
+    companyName: m.company.name,
+    companyType: m.company.type,
+    role: m.role,
+    isPrimary: m.isPrimary,
+    isActive: m.isActive,
+  }));
+}
+
 export class AuthService {
   constructor(
     private readonly prisma: PrismaClient,
@@ -55,9 +78,10 @@ export class AuthService {
     const passwordHash = await hashPassword(input.password, this.argon);
     const role = roleForCompanyType(input.companyType);
 
-    const { user, memberships } = await this.prisma.$transaction(async (tx) => {
+    const { user, membershipRows } = await this.prisma.$transaction(async (tx) => {
+      const loadNumberPrefix = await generateUniqueLoadNumberPrefix(tx, input.companyName);
       const company = await tx.company.create({
-        data: { type: input.companyType, name: input.companyName },
+        data: { type: input.companyType, name: input.companyName, loadNumberPrefix },
       });
       const user = await tx.user.create({
         data: {
@@ -65,25 +89,21 @@ export class AuthService {
           passwordHash,
           firstName: input.firstName,
           lastName: input.lastName,
-          memberships: { create: { companyId: company.id, role, isPrimary: true } },
+          memberships: {
+            create: { companyId: company.id, role, isPrimary: true, isActive: true },
+          },
         },
+        include: { memberships: { include: { company: { select: { name: true, type: true } } } } },
       });
-      const memberships: MembershipView[] = [
-        {
-          companyId: company.id,
-          companyName: company.name,
-          companyType: company.type,
-          role,
-          isPrimary: true,
-        },
-      ];
-      return { user, memberships };
+      return { user, membershipRows: user.memberships as MembershipRow[] };
     });
 
-    const session = await this.issueSession(user.id, ctx);
+    const activeCompanyId = membershipRows[0]?.companyId ?? null;
+    const session = await this.issueSession(user.id, activeCompanyId, ctx);
     return {
       user: toPublicUser(user),
-      memberships,
+      memberships: toViews(membershipRows),
+      activeCompanyId,
       permissions: [...permissionsForRole(role)],
       token: session.token,
       expiresAt: session.expiresAt,
@@ -93,30 +113,36 @@ export class AuthService {
   async login(input: LoginInput, ctx: SessionContext): Promise<AuthResult> {
     const user = await this.prisma.user.findUnique({
       where: { email: input.email },
-      include: { memberships: { include: { company: true }, orderBy: { isPrimary: "desc" } } },
+      include: {
+        memberships: {
+          include: { company: { select: { name: true, type: true } } },
+          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
+        },
+      },
     });
 
     // Uniform failure regardless of whether the email exists or the password is
     // wrong — still run a hash verification to keep timing consistent.
     const ok = user
       ? await verifyPassword(user.passwordHash, input.password)
-      : await verifyPassword("$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", input.password);
+      : await verifyPassword(
+          "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          input.password,
+        );
 
     if (!user || !ok || !user.isActive) throw unauthorized("Invalid email or password");
 
-    const memberships: MembershipView[] = user.memberships.map((m) => ({
-      companyId: m.companyId,
-      companyName: m.company.name,
-      companyType: m.company.type,
-      role: m.role,
-      isPrimary: m.isPrimary,
-    }));
-    const role = memberships[0]?.role ?? "ADMIN";
+    const rows = user.memberships as MembershipRow[];
+    const views = toViews(rows);
+    const firstActive = rows.find((m) => m.isActive) ?? null;
+    const activeCompanyId = firstActive?.companyId ?? null;
+    const role = firstActive?.role ?? "ADMIN";
 
-    const session = await this.issueSession(user.id, ctx);
+    const session = await this.issueSession(user.id, activeCompanyId, ctx);
     return {
       user: toPublicUser(user),
-      memberships,
+      memberships: views,
+      activeCompanyId,
       permissions: [...permissionsForRole(role)],
       token: session.token,
       expiresAt: session.expiresAt,
@@ -130,13 +156,14 @@ export class AuthService {
     });
   }
 
-  private async issueSession(userId: string, ctx: SessionContext) {
+  private async issueSession(userId: string, activeCompanyId: string | null, ctx: SessionContext) {
     const token = generateSessionToken();
     const expiresAt = sessionExpiry(this.sessionTtlHours);
     await this.prisma.session.create({
       data: {
         userId,
         tokenHash: hashSessionToken(token),
+        activeCompanyId,
         expiresAt,
         ip: ctx.ip,
         userAgent: ctx.userAgent?.slice(0, 512) ?? null,

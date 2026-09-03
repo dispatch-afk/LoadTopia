@@ -9,12 +9,14 @@ declare module "fastify" {
     env: Env;
     prisma: PrismaClient;
     providers: ProviderRegistry;
-    /** preHandler: rejects with 401 unless a valid session is present. */
+    /** preHandler: 401 unless a valid session is present. Resolves the active company. */
     authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
-    /** preHandler factory: 401 if unauthenticated, 403 if missing the permission. */
+    /** preHandler factory: authenticate, then 403 if the active role lacks the permission. */
     requirePermission: (
       permission: Permission,
     ) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    /** preHandler: authenticate, then 409 unless the request has an active company context. */
+    requireActiveCompany: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 
   interface FastifyRequest {

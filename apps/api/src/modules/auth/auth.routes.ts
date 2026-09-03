@@ -1,9 +1,10 @@
-import { loginSchema, registerSchema } from "@loadtopia/shared";
+import { loginSchema, registerSchema, switchCompanySchema } from "@loadtopia/shared";
 import { permissionsForRole } from "@loadtopia/domain";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { writeAudit } from "../../lib/audit";
 import { AppError, unauthorized } from "../../lib/errors";
 import { hashSessionToken } from "../../lib/session";
+import { resolveSessionContext } from "../../lib/session-context";
 import { AuthService } from "./auth.service";
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
@@ -32,12 +33,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     reply.clearCookie(cookieName, { path: "/" });
   };
 
-  // Stricter rate limit for credential endpoints.
   const authRateLimit = {
-    rateLimit: {
-      max: app.env.AUTH_RATE_LIMIT_MAX,
-      timeWindow: app.env.AUTH_RATE_LIMIT_WINDOW,
-    },
+    rateLimit: { max: app.env.AUTH_RATE_LIMIT_MAX, timeWindow: app.env.AUTH_RATE_LIMIT_WINDOW },
   };
 
   app.post("/auth/register", { config: authRateLimit }, async (request, reply) => {
@@ -57,6 +54,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     return {
       user: result.user,
       memberships: result.memberships,
+      activeCompanyId: result.activeCompanyId,
       permissions: result.permissions,
     };
   });
@@ -71,21 +69,16 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         userAgent: request.headers["user-agent"] ?? null,
       });
     } catch (err) {
-      // Append-only record of every rejected credential attempt, for security
-      // monitoring (brute force / credential stuffing). The record is identical
-      // whether the email exists or not, so it never discloses account
-      // existence, and it carries NO password, hash, or token.
+      // Append-only record of every rejected credential attempt. Identical
+      // whether the email exists or not — never discloses account existence,
+      // and carries NO password, hash, or token.
       if (err instanceof AppError && err.statusCode === 401) {
         await writeAudit(app.prisma, request, {
           actorUserId: null,
           action: "auth.login_failed",
           entityType: "user",
           entityId: null,
-          data: {
-            reason: "invalid_credentials",
-            email: input.email,
-            requestId: request.id,
-          },
+          data: { reason: "invalid_credentials", email: input.email, requestId: request.id },
         });
       }
       throw err;
@@ -101,6 +94,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     return {
       user: result.user,
       memberships: result.memberships,
+      activeCompanyId: result.activeCompanyId,
       permissions: result.permissions,
     };
   });
@@ -126,9 +120,35 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         createdAt: user.createdAt.toISOString(),
       },
       memberships: request.currentMemberships ?? [],
-      role: actor.role,
-      companyId: actor.companyId,
-      permissions: [...permissionsForRole(actor.role)],
+      activeCompanyId: actor.companyId,
+      role: actor.companyId ? actor.role : null,
+      permissions: actor.companyId || actor.role === "ADMIN" ? [...permissionsForRole(actor.role)] : [],
+    };
+  });
+
+  /**
+   * Switch the active company. The server verifies the target is an ACTIVE
+   * membership of the caller (never trusts the id blindly) and persists it on
+   * the session, so the choice survives page reloads.
+   */
+  app.post("/auth/switch-company", { preHandler: [app.authenticate] }, async (request) => {
+    const { companyId } = switchCompanySchema.parse(request.body);
+    const raw = request.cookies[cookieName]!;
+    const ctx = await resolveSessionContext(app.prisma, hashSessionToken(raw), companyId);
+    if (!ctx) throw unauthorized();
+
+    await writeAudit(app.prisma, request, {
+      actorUserId: ctx.actor.userId,
+      action: "auth.switch_company",
+      entityType: "company",
+      entityId: companyId,
+    });
+
+    return {
+      activeCompanyId: ctx.actor.companyId,
+      role: ctx.actor.role,
+      permissions: [...permissionsForRole(ctx.actor.role)],
+      memberships: ctx.memberships,
     };
   });
 }
