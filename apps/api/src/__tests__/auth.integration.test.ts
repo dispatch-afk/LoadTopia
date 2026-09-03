@@ -123,4 +123,90 @@ suite("auth flow (integration)", () => {
     });
     expect(me.statusCode).toBe(401);
   });
+
+  describe("failed-login auditing", () => {
+    async function latestFailedLoginAudit() {
+      return prisma.auditLog.findFirst({
+        where: { action: "auth.login_failed" },
+        orderBy: { createdAt: "desc" },
+      });
+    }
+
+    it("records an audit row for an invalid password and keeps the uniform 401", async () => {
+      const api = await makeApp();
+      await api.inject({ method: "POST", url: "/api/auth/register", payload });
+
+      const res = await api.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { email: payload.email, password: "definitely-not-it" },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(res.json().error).toMatchObject({
+        code: "UNAUTHORIZED",
+        message: "Invalid email or password",
+      });
+
+      const row = await latestFailedLoginAudit();
+      expect(row).not.toBeNull();
+      expect(row!.actorUserId).toBeNull();
+      expect(row!.entityType).toBe("user");
+      expect(row!.entityId).toBeNull();
+      expect(row!.ip).toBeTruthy();
+      expect(row!.data).toMatchObject({
+        reason: "invalid_credentials",
+        email: payload.email,
+      });
+    });
+
+    it("records an audit row for an unknown email and keeps the uniform 401", async () => {
+      const api = await makeApp();
+
+      const res = await api.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { email: "ghost@integration.test", password: "some-password" },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(res.json().error.message).toBe("Invalid email or password");
+
+      const row = await latestFailedLoginAudit();
+      expect(row).not.toBeNull();
+      expect(row!.actorUserId).toBeNull();
+      expect(row!.entityId).toBeNull();
+      expect(row!.data).toMatchObject({
+        reason: "invalid_credentials",
+        email: "ghost@integration.test",
+      });
+    });
+
+    it("stores no password, hash, or session token in the audit row", async () => {
+      const api = await makeApp();
+      await api.inject({ method: "POST", url: "/api/auth/register", payload });
+
+      await api.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { email: payload.email, password: "Leak-Check-Secret-999" },
+      });
+
+      const user = await prisma.user.findUniqueOrThrow({ where: { email: payload.email } });
+      const rows = await prisma.auditLog.findMany({ where: { action: "auth.login_failed" } });
+      const blob = JSON.stringify(rows);
+      expect(blob).not.toContain("Leak-Check-Secret-999");
+      expect(blob).not.toContain(user.passwordHash);
+      expect(blob).not.toContain("$argon2");
+      expect(blob.toLowerCase()).not.toContain("passwordhash");
+      expect(blob).not.toContain("token");
+
+      // A successful login still audits as "auth.login" (unchanged behaviour).
+      const ok = await api.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { email: payload.email, password: payload.password },
+      });
+      expect(ok.statusCode).toBe(200);
+      expect(await prisma.auditLog.count({ where: { action: "auth.login" } })).toBe(1);
+    });
+  });
 });

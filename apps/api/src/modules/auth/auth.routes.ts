@@ -2,7 +2,7 @@ import { loginSchema, registerSchema } from "@loadtopia/shared";
 import { permissionsForRole } from "@loadtopia/domain";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { writeAudit } from "../../lib/audit";
-import { unauthorized } from "../../lib/errors";
+import { AppError, unauthorized } from "../../lib/errors";
 import { hashSessionToken } from "../../lib/session";
 import { AuthService } from "./auth.service";
 
@@ -63,10 +63,34 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
   app.post("/auth/login", { config: authRateLimit }, async (request, reply) => {
     const input = loginSchema.parse(request.body);
-    const result = await service.login(input, {
-      ip: request.ip,
-      userAgent: request.headers["user-agent"] ?? null,
-    });
+
+    let result: Awaited<ReturnType<typeof service.login>>;
+    try {
+      result = await service.login(input, {
+        ip: request.ip,
+        userAgent: request.headers["user-agent"] ?? null,
+      });
+    } catch (err) {
+      // Append-only record of every rejected credential attempt, for security
+      // monitoring (brute force / credential stuffing). The record is identical
+      // whether the email exists or not, so it never discloses account
+      // existence, and it carries NO password, hash, or token.
+      if (err instanceof AppError && err.statusCode === 401) {
+        await writeAudit(app.prisma, request, {
+          actorUserId: null,
+          action: "auth.login_failed",
+          entityType: "user",
+          entityId: null,
+          data: {
+            reason: "invalid_credentials",
+            email: input.email,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+
     setSessionCookie(reply, result.token, result.expiresAt);
     await writeAudit(app.prisma, request, {
       actorUserId: result.user.id,
