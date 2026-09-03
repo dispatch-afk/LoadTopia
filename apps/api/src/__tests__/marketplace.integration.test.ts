@@ -512,9 +512,12 @@ suite("marketplace (integration)", () => {
       makeOffer(c, loadId, "1800.00"),
       makeOffer(c, loadId, "1800.00"),
     ]);
-    const codes = results.map((r) => r.statusCode).sort();
-    expect(codes[0]).toBe(200);
-    expect(codes.at(-1)).toBe(201);
+    const codes = results.map((r) => r.statusCode);
+    // Exactly one create wins; the losers of the race get 409 (or 200 if the
+    // winner had already committed and became a visible idempotent replay).
+    expect(codes.filter((c) => c === 201)).toHaveLength(1);
+    expect(codes.filter((c) => c === 200 || c === 409)).toHaveLength(2);
+    // The DB unique constraint is the real guarantee: one thread, one round.
     expect(await prisma.offerThread.count({ where: { loadId } })).toBe(1);
     expect(await prisma.offerRound.count({ where: { thread: { loadId } } })).toBe(1);
   });
