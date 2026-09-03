@@ -1,0 +1,360 @@
+// LoadTopia database schema.
+//
+// Conventions:
+//   * Primary keys: UUID (gen_random_uuid() — Postgres 13+ core). Column type is
+//     `uuid`; adopting UUIDv7 later is an app-side generation change, not a
+//     schema migration.
+//   * Timestamps: `timestamptz(6)`, always UTC. `created_at` defaulted,
+//     `updated_at` via @updatedAt.
+//   * Money: NUMERIC(14,2) via Prisma `Decimal` — never floating point.
+//   * All snake_case table/column names via @map/@@map.
+//   * Historical/append-only tables (load_events, market_rates, audit_logs) are
+//     never updated or deleted by application code.
+
+generator client {
+  provider = "prisma-client-js"
+  // "native" covers local dev + CI (linux-x64 / linux-arm64 / darwin).
+  // The extra targets cover the production container images (Debian slim, Alpine).
+  // NOTE: Prisma has no windows-arm64 engine — on a Windows/ARM host, run the
+  // database-backed workflow (migrate, seed, integration tests, the server)
+  // inside WSL2. Windows/ARM natively supports install, typecheck, lint, unit
+  // tests, and `prisma generate` only.
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums (mirror packages/shared/src/enums.ts)
+// ---------------------------------------------------------------------------
+
+enum CompanyType {
+  SHIPPER
+  CARRIER
+}
+
+enum UserRole {
+  SHIPPER
+  CARRIER
+  ADMIN
+}
+
+enum LoadStatus {
+  DRAFT
+  POSTED
+  OFFER_RECEIVED
+  AWARDED
+  CARRIER_ASSIGNED
+  PICKED_UP
+  IN_TRANSIT
+  DELIVERED
+  COMPLETED
+  CANCELLED
+}
+
+enum EquipmentType {
+  DRY_VAN
+  REEFER
+  FLATBED
+  STEP_DECK
+  POWER_ONLY
+}
+
+enum LoadEventType {
+  CREATED
+  STATUS_CHANGED
+  OFFER_CREATED
+  OFFER_ACCEPTED
+  OFFER_REJECTED
+  NOTE_ADDED
+  CANCELLED
+}
+
+enum OfferStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+  COUNTERED
+}
+
+// ---------------------------------------------------------------------------
+// Identity & organizations
+// ---------------------------------------------------------------------------
+
+model Company {
+  id        String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type      CompanyType
+  name      String
+  mcNumber  String?     @map("mc_number")
+  dotNumber String?     @map("dot_number")
+  createdAt DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  memberships  Membership[]
+  locations    Location[]
+  equipment    Equipment[]
+  shippedLoads Load[]       @relation("ShipperLoads")
+  carriedLoads Load[]       @relation("CarrierLoads")
+  offers       LoadOffer[]
+
+  @@unique([type, name])
+  @@index([type])
+  @@map("companies")
+}
+
+model User {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  firstName    String   @map("first_name")
+  lastName     String   @map("last_name")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  memberships  Membership[]
+  sessions     Session[]
+  auditLogs    AuditLog[]
+  loadEvents   LoadEvent[]
+  createdLoads Load[]       @relation("LoadCreatedBy")
+  createdOffers LoadOffer[] @relation("OfferCreatedBy")
+
+  @@map("users")
+}
+
+/// Join of User <-> Company carrying the user's role WITHIN that company.
+/// A user may belong to multiple companies with different roles.
+model Membership {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  companyId String   @map("company_id") @db.Uuid
+  role      UserRole
+  isPrimary Boolean  @default(false) @map("is_primary")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, companyId])
+  @@index([companyId])
+  @@map("company_users")
+}
+
+/// Opaque server-side session. Only the SHA-256 hash of the token is stored.
+model Session {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  ip        String?
+  userAgent String?   @map("user_agent")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// ---------------------------------------------------------------------------
+// Freight reference data
+// ---------------------------------------------------------------------------
+
+model Location {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId    String?  @map("company_id") @db.Uuid
+  label        String?
+  addressLine1 String   @map("address_line1")
+  addressLine2 String?  @map("address_line2")
+  city         String
+  region       String
+  postalCode   String   @map("postal_code")
+  country      String   @default("US")
+  latitude     Decimal? @db.Decimal(9, 6)
+  longitude    Decimal? @db.Decimal(9, 6)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  company      Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  originLoads  Load[]   @relation("LoadOrigin")
+  destLoads    Load[]   @relation("LoadDestination")
+
+  @@index([companyId])
+  @@index([region, city])
+  @@map("locations")
+}
+
+model Equipment {
+  id          String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId   String        @map("company_id") @db.Uuid
+  type        EquipmentType
+  description String?
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@map("equipment")
+}
+
+/// A directional origin->destination corridor. Rates are attached over time.
+model Lane {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  originRegion      String   @map("origin_region")
+  originCity        String   @default("") @map("origin_city")
+  destinationRegion String   @map("destination_region")
+  destinationCity   String   @default("") @map("destination_city")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  marketRates MarketRate[]
+
+  @@unique([originRegion, originCity, destinationRegion, destinationCity])
+  @@map("lanes")
+}
+
+/// APPEND-ONLY. Each row is one observation of a rate for a lane/equipment at a
+/// point in time. Never updated or deleted — this is core pricing history.
+model MarketRate {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  laneId        String        @map("lane_id") @db.Uuid
+  equipmentType EquipmentType @map("equipment_type")
+  source        String
+  isMock        Boolean       @default(false) @map("is_mock")
+  lowRate       Decimal       @map("low_rate") @db.Decimal(14, 2)
+  midRate       Decimal       @map("mid_rate") @db.Decimal(14, 2)
+  highRate      Decimal       @map("high_rate") @db.Decimal(14, 2)
+  ratePerMile   Decimal?      @map("rate_per_mile") @db.Decimal(10, 4)
+  currency      String        @default("USD")
+  observedAt    DateTime      @map("observed_at") @db.Timestamptz(6)
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lane Lane @relation(fields: [laneId], references: [id], onDelete: Cascade)
+
+  @@index([laneId, equipmentType, observedAt])
+  @@index([source, observedAt])
+  @@map("market_rates")
+}
+
+// ---------------------------------------------------------------------------
+// Loads
+// ---------------------------------------------------------------------------
+
+model Load {
+  id                    String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  referenceNumber       String        @unique @map("reference_number")
+  status                LoadStatus    @default(DRAFT)
+  shipperCompanyId      String        @map("shipper_company_id") @db.Uuid
+  carrierCompanyId      String?       @map("carrier_company_id") @db.Uuid
+  createdByUserId       String        @map("created_by_user_id") @db.Uuid
+  originLocationId      String        @map("origin_location_id") @db.Uuid
+  destinationLocationId String        @map("destination_location_id") @db.Uuid
+  equipmentType         EquipmentType @map("equipment_type")
+  commodity             String?
+  weightLbs             Int?          @map("weight_lbs")
+  pickupWindowStart     DateTime?     @map("pickup_window_start") @db.Timestamptz(6)
+  pickupWindowEnd       DateTime?     @map("pickup_window_end") @db.Timestamptz(6)
+  deliveryWindowStart   DateTime?     @map("delivery_window_start") @db.Timestamptz(6)
+  deliveryWindowEnd     DateTime?     @map("delivery_window_end") @db.Timestamptz(6)
+  offeredRate           Decimal?      @map("offered_rate") @db.Decimal(14, 2)
+  bookedRate            Decimal?      @map("booked_rate") @db.Decimal(14, 2)
+  currency              String        @default("USD")
+  distanceMeters        Int?          @map("distance_meters")
+  postedAt              DateTime?     @map("posted_at") @db.Timestamptz(6)
+  cancelledAt           DateTime?     @map("cancelled_at") @db.Timestamptz(6)
+  createdAt             DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  shipperCompany Company     @relation("ShipperLoads", fields: [shipperCompanyId], references: [id], onDelete: Restrict)
+  carrierCompany Company?    @relation("CarrierLoads", fields: [carrierCompanyId], references: [id], onDelete: Restrict)
+  createdBy      User        @relation("LoadCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  origin         Location    @relation("LoadOrigin", fields: [originLocationId], references: [id], onDelete: Restrict)
+  destination    Location    @relation("LoadDestination", fields: [destinationLocationId], references: [id], onDelete: Restrict)
+  events         LoadEvent[]
+  offers         LoadOffer[]
+
+  @@index([status])
+  @@index([shipperCompanyId, status])
+  @@index([carrierCompanyId])
+  @@index([equipmentType, status])
+  @@index([createdAt])
+  @@map("loads")
+}
+
+/// IMMUTABLE. One row per meaningful thing that happened to a load. The
+/// application only ever INSERTs here. This is the load audit trail and a
+/// primary input to LoadTopia transaction intelligence.
+model LoadEvent {
+  id          String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId      String        @map("load_id") @db.Uuid
+  type        LoadEventType
+  fromStatus  LoadStatus?   @map("from_status")
+  toStatus    LoadStatus?   @map("to_status")
+  actorUserId String?       @map("actor_user_id") @db.Uuid
+  note        String?
+  data        Json?
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  load  Load  @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([loadId, createdAt])
+  @@index([type, createdAt])
+  @@map("load_events")
+}
+
+model LoadOffer {
+  id               String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId           String      @map("load_id") @db.Uuid
+  carrierCompanyId String      @map("carrier_company_id") @db.Uuid
+  createdByUserId  String      @map("created_by_user_id") @db.Uuid
+  status           OfferStatus @default(PENDING)
+  amount           Decimal     @db.Decimal(14, 2)
+  currency         String      @default("USD")
+  parentOfferId    String?     @map("parent_offer_id") @db.Uuid
+  message          String?
+  expiresAt        DateTime?   @map("expires_at") @db.Timestamptz(6)
+  createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  load          Load        @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  carrierCompany Company    @relation(fields: [carrierCompanyId], references: [id], onDelete: Cascade)
+  createdBy     User        @relation("OfferCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  parentOffer   LoadOffer?  @relation("OfferChain", fields: [parentOfferId], references: [id], onDelete: SetNull)
+  counterOffers LoadOffer[] @relation("OfferChain")
+
+  @@index([loadId, status])
+  @@index([carrierCompanyId, status])
+  @@map("load_offers")
+}
+
+// ---------------------------------------------------------------------------
+// Security / audit
+// ---------------------------------------------------------------------------
+
+/// APPEND-ONLY security audit log for sensitive actions.
+model AuditLog {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorUserId String?  @map("actor_user_id") @db.Uuid
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String?  @map("entity_id")
+  ip          String?
+  userAgent   String?  @map("user_agent")
+  data        Json?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId, createdAt])
+  @@index([entityType, entityId])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}
