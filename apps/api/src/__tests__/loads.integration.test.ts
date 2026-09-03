@@ -269,6 +269,29 @@ suite("loads (integration)", () => {
       expect(events.at(-1)!.note).toBe("customer cancelled the order");
     });
 
+    it("two concurrent /post requests: one succeeds, one 409s, exactly one event is written", async () => {
+      const s = await shipperWithLocations();
+      const created = await api.inject(
+        authed(s.cookie, { method: "POST", url: "/api/loads", payload: draftPayload(s.origin, s.dest) }),
+      );
+      const id = created.json().id;
+
+      const [a, b] = await Promise.all([
+        api.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${id}/post` })),
+        api.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${id}/post` })),
+      ]);
+
+      const codes = [a.statusCode, b.statusCode].sort();
+      expect(codes).toEqual([200, 409]);
+
+      const events = await prisma.loadEvent.findMany({ where: { loadId: id, type: "STATUS_CHANGED" } });
+      expect(events).toHaveLength(1);
+      expect(events[0]!.toStatus).toBe("POSTED");
+
+      const load = await prisma.load.findUniqueOrThrow({ where: { id } });
+      expect(load.status).toBe("POSTED");
+    });
+
     it("rejects posting an incomplete load and any illegal transition", async () => {
       const s = await shipperWithLocations();
       const created = await api.inject(

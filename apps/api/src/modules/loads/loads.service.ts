@@ -350,7 +350,7 @@ export class LoadsService {
     from: LoadStatus,
     to: LoadStatus,
     actorUserId: string,
-    extra: Prisma.LoadUncheckedUpdateInput,
+    extra: Prisma.LoadUncheckedUpdateManyInput,
     note?: string,
   ): Promise<void> {
     assertLoadTransition(from, to);
@@ -359,17 +359,17 @@ export class LoadsService {
       throw conflict("That transition is not available yet");
     }
     await this.prisma.$transaction(async (tx) => {
-      const current = await tx.load.findUniqueOrThrow({
-        where: { id },
-        select: { status: true },
-      });
-      if (current.status !== from) {
-        throw conflict("The load changed while you were working on it. Reload and try again.");
-      }
-      await tx.load.update({
-        where: { id },
+      // Atomic compare-and-set: only the row still in `from` is updated. Under
+      // concurrent identical transitions the row lock serialises the two
+      // `updateMany`s and the second sees `status = to` (not `from`) -> count 0
+      // -> 409, so exactly ONE transition and ONE event ever land.
+      const result = await tx.load.updateMany({
+        where: { id, status: from },
         data: { ...extra, status: to, updatedByUserId: actorUserId },
       });
+      if (result.count === 0) {
+        throw conflict("The load changed while you were working on it. Reload and try again.");
+      }
       await this.appendEvent(
         tx,
         buildStatusChangeEvent({

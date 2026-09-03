@@ -186,24 +186,29 @@ export class CompaniesService {
     assertCompanyScope(actor, membership.companyId);
     assertPermission(actor, Permission.MEMBERSHIP_MANAGE);
 
-    if (input.isActive === false) {
-      if (membership.userId === actor.userId) {
-        throw badRequest("You cannot deactivate your own membership");
-      }
-      const activeCount = await this.prisma.membership.count({
-        where: { companyId: membership.companyId, isActive: true },
-      });
-      if (activeCount <= 1) {
-        throw badRequest("A company must keep at least one active member");
-      }
+    if (input.isActive === false && membership.userId === actor.userId) {
+      throw badRequest("You cannot deactivate your own membership");
     }
 
-    const updated = await this.prisma.membership.update({
-      where: { id: membershipId },
-      data: {
-        ...(input.role !== undefined ? { role: input.role } : {}),
-        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
-      },
+    const data = {
+      ...(input.role !== undefined ? { role: input.role } : {}),
+      ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+    };
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (input.isActive === false) {
+        // Serialise concurrent deactivations for this company by locking the
+        // company row first, so the "keep >= 1 active member" invariant cannot
+        // be raced past by two admins deactivating the last two members at once.
+        await tx.$executeRaw`SELECT 1 FROM companies WHERE id = ${membership.companyId}::uuid FOR UPDATE`;
+        const othersActive = await tx.membership.count({
+          where: { companyId: membership.companyId, isActive: true, id: { not: membershipId } },
+        });
+        if (othersActive < 1) {
+          throw badRequest("A company must keep at least one active member");
+        }
+      }
+      return tx.membership.update({ where: { id: membershipId }, data });
     });
     return this.memberView(updated.id);
   }

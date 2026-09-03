@@ -136,14 +136,16 @@ export class AuthService {
     const views = toViews(rows);
     const firstActive = rows.find((m) => m.isActive) ?? null;
     const activeCompanyId = firstActive?.companyId ?? null;
-    const role = firstActive?.role ?? "ADMIN";
+    // Mirror resolveSessionContext: ADMIN only for a true no-membership staff
+    // account; a user with no ACTIVE membership gets no company and no permissions.
+    const effectiveRole = firstActive?.role ?? (rows.length === 0 ? "ADMIN" : null);
 
     const session = await this.issueSession(user.id, activeCompanyId, ctx);
     return {
       user: toPublicUser(user),
       memberships: views,
       activeCompanyId,
-      permissions: [...permissionsForRole(role)],
+      permissions: effectiveRole ? [...permissionsForRole(effectiveRole)] : [],
       token: session.token,
       expiresAt: session.expiresAt,
     };

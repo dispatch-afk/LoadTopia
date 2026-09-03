@@ -175,6 +175,64 @@ suite("companies + memberships + company switching (integration)", () => {
       expect(off.statusCode).toBe(200);
       expect(off.json().isActive).toBe(false);
     });
+
+    it("keeps >= 1 active member under concurrent last-two deactivations", async () => {
+      const owner = await registerCompany(api, { companyName: "Race Co" });
+      await registerCompany(api, { email: "racer@it.test" });
+      const added = await api.inject(
+        authed(owner.cookie, {
+          method: "POST",
+          url: `/api/companies/${owner.companyId}/members`,
+          payload: { email: "racer@it.test", role: "SHIPPER" },
+        }),
+      );
+      const workerMembershipId = added.json().membershipId;
+
+      const members = await api.inject(
+        authed(owner.cookie, { method: "GET", url: `/api/companies/${owner.companyId}/members` }),
+      );
+      const ownerMembershipId = members
+        .json()
+        .data.find((m: { userId: string }) => m.userId === owner.userId).membershipId;
+
+      const login = await api.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { email: "racer@it.test", password: "integration-test-password" },
+      });
+      const wc = login.cookies.find((c) => c.name === "loadtopia_session")!.value;
+      await api.inject(
+        authed(wc, {
+          method: "POST",
+          url: "/api/auth/switch-company",
+          payload: { companyId: owner.companyId },
+        }),
+      );
+
+      // Each side deactivates the OTHER of the two remaining members, at once.
+      const [r1, r2] = await Promise.all([
+        api.inject(
+          authed(owner.cookie, {
+            method: "PATCH",
+            url: `/api/memberships/${workerMembershipId}`,
+            payload: { isActive: false },
+          }),
+        ),
+        api.inject(
+          authed(wc, {
+            method: "PATCH",
+            url: `/api/memberships/${ownerMembershipId}`,
+            payload: { isActive: false },
+          }),
+        ),
+      ]);
+
+      expect([r1.statusCode, r2.statusCode].filter((c) => c === 200)).toHaveLength(1);
+      const activeAfter = await prisma.membership.count({
+        where: { companyId: owner.companyId, isActive: true },
+      });
+      expect(activeAfter).toBeGreaterThanOrEqual(1);
+    });
   });
 
   describe("company switching", () => {

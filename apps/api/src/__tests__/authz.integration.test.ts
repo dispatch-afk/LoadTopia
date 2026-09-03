@@ -101,6 +101,70 @@ suite("authorization (integration)", () => {
     expect(after.json().activeCompanyId).not.toBe(owner.companyId);
   });
 
+  it("a user whose EVERY membership is inactive is locked out — NEVER escalated to platform admin", async () => {
+    const victim = await registerCompany(api, { email: "locked@it.test" });
+    const bystander = await registerCompany(api, { companyName: "Bystander Co" });
+
+    // Simulate the "removed from your only team" end state directly.
+    await prisma.membership.updateMany({
+      where: { userId: victim.userId },
+      data: { isActive: false },
+    });
+
+    // /me: no active company, no role, no permissions (not ADMIN).
+    const me = await api.inject(authed(victim.cookie, { method: "GET", url: "/api/auth/me" }));
+    expect(me.statusCode).toBe(200);
+    expect(me.json().activeCompanyId).toBeNull();
+    expect(me.json().role).toBeNull();
+    expect(me.json().permissions).toEqual([]);
+
+    // Must NOT be able to read another company (an ADMIN bypass would allow it).
+    const peek = await api.inject(
+      authed(victim.cookie, { method: "GET", url: `/api/companies/${bystander.companyId}` }),
+    );
+    expect(peek.statusCode).toBe(404);
+    const peekMembers = await api.inject(
+      authed(victim.cookie, { method: "GET", url: `/api/companies/${bystander.companyId}/members` }),
+    );
+    expect(peekMembers.statusCode).toBe(404);
+
+    // Must NOT be able to add themselves to another company.
+    const grab = await api.inject(
+      authed(victim.cookie, {
+        method: "POST",
+        url: `/api/companies/${bystander.companyId}/members`,
+        payload: { email: "locked@it.test", role: "SHIPPER" },
+      }),
+    );
+    expect(grab.statusCode).toBe(404);
+
+    // Company-scoped resources -> 409 (no active company), never another company's data.
+    for (const url of ["/api/loads", "/api/locations", "/api/equipment"]) {
+      const r = await api.inject(authed(victim.cookie, { method: "GET", url }));
+      expect(r.statusCode, url).toBe(409);
+    }
+
+    // Cannot switch to the company they were removed from.
+    const sw = await api.inject(
+      authed(victim.cookie, {
+        method: "POST",
+        url: "/api/auth/switch-company",
+        payload: { companyId: victim.companyId },
+      }),
+    );
+    expect(sw.statusCode).toBe(403);
+
+    // login for such a user also reports no admin permissions.
+    const login = await api.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: "locked@it.test", password: "integration-test-password" },
+    });
+    expect(login.statusCode).toBe(200);
+    expect(login.json().activeCompanyId).toBeNull();
+    expect(login.json().permissions).toEqual([]);
+  });
+
   it("enforces role restrictions: a CARRIER member cannot create loads", async () => {
     const carrier = await registerCompany(api, { type: "CARRIER" });
     const res = await api.inject(

@@ -87,13 +87,24 @@ export async function resolveSessionContext(
     (m) => m.companyId === activeCompanyId && m.isActive,
   );
 
+  // ADMIN is ONLY granted to a genuine platform-staff account — one provisioned
+  // out of band with NO company membership at all. A regular user whose
+  // membership(s) were all deactivated (e.g. removed from their only team) gets
+  // NO active company and a non-privileged role, so `assertCompanyScope` /
+  // `requireActiveCompany` lock them out until they are re-added or create a new
+  // company. They must NEVER be escalated to ADMIN.
+  const role: AuthenticatedActor["role"] = activeMembership
+    ? activeMembership.role
+    : memberships.length === 0
+      ? "ADMIN"
+      : "CARRIER";
+
   const actor: AuthenticatedActor = {
     userId: session.user.id,
     email: session.user.email,
     companyId: activeMembership?.companyId ?? null,
     companyType: activeMembership?.company.type ?? null,
-    // A user with no membership is a platform-staff (ADMIN) account.
-    role: activeMembership?.role ?? "ADMIN",
+    role,
     membershipId: activeMembership?.id ?? null,
   };
 
