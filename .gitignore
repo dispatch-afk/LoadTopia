@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# Environment / secrets — NEVER commit real values
+.env
+.env.*
+!.env.example
+
+# Prisma generated client (regenerated from schema)
+packages/db/src/generated/
+
+# Test / coverage
+coverage/
+*.lcov
+.vitest/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+logs/
+
+# Database dumps / local data
+*.sql.gz
+*.dump
+pgdata/
+docker/volumes/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+
+# Temp
+tmp/
+.tmp/
