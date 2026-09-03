@@ -1,58 +1,142 @@
 /**
- * Development seed — clearly-labelled MOCK data only.
+ * Development seed — clearly-labelled MOCK data only. Never run against production.
  *
- * Creates two demo companies (one shipper, one carrier) and an admin user so the
- * auth foundation can be exercised locally. It creates NO loads, NO offers, and
- * NO market rates — those belong to later milestones. Safe to re-run (idempotent
- * upserts). Never run against production.
+ * Creates one shipper company with a working admin login, a small location book,
+ * one piece of equipment, and a single DRAFT load so the shipper workflow can be
+ * explored immediately. Idempotent (safe to re-run).
  */
 import { PrismaClient } from "@prisma/client";
+import { hash } from "@node-rs/argon2";
 
 const prisma = new PrismaClient();
 
-// Placeholder Argon2id hash of the string "ChangeMe-dev-000" — dev only.
-// Regenerate with: node -e "require('@node-rs/argon2').hash('...').then(console.log)"
-const DEV_PASSWORD_HASH =
-  "$argon2id$v=19$m=19456,t=2,p=1$c2VlZHNlZWRzZWVkc2VlZA$3s5Yd0m3o0m9m0Q1u8m8m6m0m0m0m0m0m0m0m0m0m0";
+const DEV_EMAIL = "dispatch@loadtopia.local";
+const DEV_PASSWORD = "loadtopia-dev-password";
 
 async function main() {
   if (process.env.NODE_ENV === "production") {
     throw new Error("Refusing to seed a production database.");
   }
 
+  const passwordHash = await hash(DEV_PASSWORD, { memoryCost: 19456, timeCost: 2, parallelism: 1 });
+
   const shipper = await prisma.company.upsert({
     where: { type_name: { type: "SHIPPER", name: "[MOCK] Palermo Foods" } },
     update: {},
-    create: { type: "SHIPPER", name: "[MOCK] Palermo Foods" },
-  });
-
-  const carrier = await prisma.company.upsert({
-    where: { type_name: { type: "CARRIER", name: "[MOCK] Blue Ridge Carriers" } },
-    update: {},
-    create: { type: "CARRIER", name: "[MOCK] Blue Ridge Carriers", mcNumber: "MC-000000" },
-  });
-
-  const admin = await prisma.user.upsert({
-    where: { email: "admin@loadtopia.local" },
-    update: {},
     create: {
-      email: "admin@loadtopia.local",
-      passwordHash: DEV_PASSWORD_HASH,
-      firstName: "Dev",
-      lastName: "Admin",
+      type: "SHIPPER",
+      name: "[MOCK] Palermo Foods",
+      loadNumberPrefix: "PALFOO",
+      addressLine1: "1 Distribution Way",
+      city: "Milwaukee",
+      state: "WI",
+      postalCode: "53202",
+      country: "US",
+      phone: "414-555-0100",
+      email: "ops@example.test",
     },
   });
 
-  console.log("Seeded MOCK data:");
-  console.table([
-    { entity: "company (shipper)", id: shipper.id, name: shipper.name },
-    { entity: "company (carrier)", id: carrier.id, name: carrier.name },
-    { entity: "user (admin)", id: admin.id, email: admin.email },
-  ]);
-  console.log(
-    "\nNote: the admin password hash is a non-functional placeholder. Register a\n" +
-      "real user via POST /api/auth/register, or replace the hash, before signing in.",
-  );
+  const user = await prisma.user.upsert({
+    where: { email: DEV_EMAIL },
+    update: { passwordHash },
+    create: { email: DEV_EMAIL, passwordHash, firstName: "Dev", lastName: "Dispatcher" },
+  });
+
+  await prisma.membership.upsert({
+    where: { userId_companyId: { userId: user.id, companyId: shipper.id } },
+    update: { isActive: true },
+    create: { userId: user.id, companyId: shipper.id, role: "SHIPPER", isPrimary: true },
+  });
+
+  const origin = await prisma.location.upsert({
+    where: { id: (await findLocation(shipper.id, "[MOCK] Milwaukee DC")) ?? "00000000-0000-0000-0000-000000000000" },
+    update: {},
+    create: {
+      companyId: shipper.id,
+      name: "[MOCK] Milwaukee DC",
+      addressLine1: "1 Distribution Way",
+      city: "Milwaukee",
+      state: "WI",
+      postalCode: "53202",
+      country: "US",
+      latitude: 43.0389,
+      longitude: -87.9065,
+      geocodedBy: "mock",
+    },
+  });
+
+  const dest = await prisma.location.upsert({
+    where: { id: (await findLocation(shipper.id, "[MOCK] Chicago Customer")) ?? "00000000-0000-0000-0000-000000000001" },
+    update: {},
+    create: {
+      companyId: shipper.id,
+      name: "[MOCK] Chicago Customer",
+      addressLine1: "233 S Wacker Dr",
+      city: "Chicago",
+      state: "IL",
+      postalCode: "60606",
+      country: "US",
+      latitude: 41.8789,
+      longitude: -87.6359,
+      geocodedBy: "mock",
+    },
+  });
+
+  await prisma.equipment.upsert({
+    where: { id: (await findEquipment(shipper.id, "[MOCK] Reefer 101")) ?? "00000000-0000-0000-0000-000000000002" },
+    update: {},
+    create: {
+      companyId: shipper.id,
+      type: "REEFER",
+      name: "[MOCK] Reefer 101",
+      trailerLengthFt: 53,
+      capacityLbs: 44000,
+    },
+  });
+
+  const existingLoad = await prisma.load.findFirst({ where: { shipperCompanyId: shipper.id } });
+  if (!existingLoad) {
+    await prisma.company.update({
+      where: { id: shipper.id },
+      data: { loadSequence: { increment: 1 } },
+    });
+    const seq = (await prisma.company.findUniqueOrThrow({ where: { id: shipper.id } })).loadSequence;
+    const load = await prisma.load.create({
+      data: {
+        referenceNumber: `PALFOO-${String(seq).padStart(5, "0")}`,
+        status: "DRAFT",
+        shipperCompanyId: shipper.id,
+        createdByUserId: user.id,
+        updatedByUserId: user.id,
+        originLocationId: origin.id,
+        destinationLocationId: dest.id,
+        equipmentType: "REEFER",
+        mode: "FTL",
+        commodity: "Refrigerated dairy",
+        weightLbs: 38000,
+        distanceMeters: 148000,
+        driveTimeMinutes: 110,
+        routingProvider: "mock",
+        routedAt: new Date(),
+      },
+    });
+    await prisma.loadEvent.create({
+      data: { loadId: load.id, type: "CREATED", toStatus: "DRAFT", actorUserId: user.id },
+    });
+  }
+
+  console.log("Seeded [MOCK] dev data. Sign in with:");
+  console.table([{ email: DEV_EMAIL, password: DEV_PASSWORD, company: shipper.name }]);
+}
+
+async function findLocation(companyId: string, name: string): Promise<string | null> {
+  const l = await prisma.location.findFirst({ where: { companyId, name } });
+  return l?.id ?? null;
+}
+async function findEquipment(companyId: string, name: string): Promise<string | null> {
+  const e = await prisma.equipment.findFirst({ where: { companyId, name } });
+  return e?.id ?? null;
 }
 
 main()
