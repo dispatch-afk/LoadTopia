@@ -9,6 +9,9 @@ build/
 out/
 *.tsbuildinfo
 
+# Next.js generated types (regenerated on build/dev)
+next-env.d.ts
+
 # Environment / secrets — NEVER commit real values
 .env
 .env.*

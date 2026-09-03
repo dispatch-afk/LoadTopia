@@ -11,6 +11,7 @@ export default tseslint.config(
       "**/coverage/**",
       "packages/db/src/generated/**",
       "packages/db/prisma/migrations/**",
+      "**/next-env.d.ts",
     ],
   },
   ...tseslint.configs.recommended,
