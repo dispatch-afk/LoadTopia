@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  NegotiationError,
+  type NegotiationError,
   assertCanRespond,
   canRespondToRound,
   nextRoundNumber,

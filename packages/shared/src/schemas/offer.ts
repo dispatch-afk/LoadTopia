@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { currencySchema, positiveMoneySchema, uuidSchema } from "./common";
+import { OFFER_THREAD_STATUSES } from "../enums";
+import { currencySchema, paginationSchema, positiveMoneySchema, uuidSchema } from "./common";
 
 const expiresInHours = z.coerce.number().int().min(1).max(336); // up to 14 days
 
@@ -36,3 +37,9 @@ export type CloseThreadInput = z.infer<typeof closeThreadSchema>;
 
 export const roundIdParamSchema = z.object({ roundId: uuidSchema });
 export const threadIdParamSchema = z.object({ threadId: uuidSchema });
+
+/** Carrier's "my offers" list. Offset pagination, server-capped (see paginationSchema). */
+export const listOfferThreadsSchema = paginationSchema.extend({
+  status: z.enum(OFFER_THREAD_STATUSES as [string, ...string[]]).optional(),
+});
+export type ListOfferThreadsQuery = z.infer<typeof listOfferThreadsSchema>;
