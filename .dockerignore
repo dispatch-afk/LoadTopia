@@ -9,4 +9,5 @@
 .env.*
 !.env.example
 docs
-**/*.test.ts
+# Test files are kept in the build context so the `build` stage can run the
+# suite (CI parity). They are never copied into the `runtime` image.

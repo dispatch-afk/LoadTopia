@@ -19,7 +19,7 @@ generator client {
   // database-backed workflow (migrate, seed, integration tests, the server)
   // inside WSL2. Windows/ARM natively supports install, typecheck, lint, unit
   // tests, and `prisma generate` only.
-  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+  binaryTargets = ["native", "linux-arm64-openssl-3.0.x", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {

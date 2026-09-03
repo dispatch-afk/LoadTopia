@@ -53,9 +53,17 @@ docs/         ARCHITECTURE.md, ROADMAP.md
 - **pnpm ≥ 9** (`npm i -g pnpm` or `corepack enable`)
 - **Docker** (for local PostgreSQL) — or a PostgreSQL 16 you manage yourself
 
-> On **Windows on ARM (Snapdragon)** Docker Desktop requires WSL2. The smoothest
-> path is to do development inside a WSL2 Ubuntu shell, where Docker, Prisma
-> engines, and native modules all run natively.
+> **Windows on ARM (Snapdragon) note.** Docker Desktop requires WSL2
+> (`wsl --install`, then reboot). Prisma ships **no Windows/ARM64 query engine**,
+> so anything that talks to the database on a Windows/ARM host — `prisma migrate`,
+> `prisma db seed`, the integration test suite, running the API server — must run
+> in Linux: either a WSL2 shell or a container. `pnpm install`, `pnpm typecheck`,
+> `pnpm lint`, `pnpm test` (unit), `pnpm build`, and `pnpm db:generate` work
+> natively on Windows/ARM. CI and production containers (Linux) are unaffected.
+>
+> The database-backed verification for this repo was run through the API's own
+> Docker image (`apps/api/Dockerfile`, `build` / `migrate` targets) against the
+> Compose Postgres — see the Docker section below.
 
 ---
 
