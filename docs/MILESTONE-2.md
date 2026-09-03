@@ -56,7 +56,7 @@ DRAFT ─post→ POSTED ─first offer→ OFFER_RECEIVED ─award→ AWARDED ─
   sets `carrierCompanyId` + `bookedRate` + `awardedOfferRoundId`.
 - `POST /api/loads/:id/assign` (shipper) transitions `AWARDED → CARRIER_ASSIGNED`.
 - `PICKED_UP … COMPLETED` remain defined but **unexposed** (`EXPOSED_LOAD_STATUSES`)
-  — M3 territory; no tracking/execution built here.
+  — a later milestone; no tracking/execution built here.
 - All transitions go through the M1 atomic `LoadsService.transition()`
   (compare-and-set `updateMany where status = from`) + one immutable `load_events`
   row, inside the same transaction as the triggering action.
