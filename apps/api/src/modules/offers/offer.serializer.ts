@@ -101,15 +101,19 @@ function toEventView(
   e: DetailRow["events"][number],
   carrierCompanyId: string,
   shipperCompanyId: string,
+  viewer: ViewerParty,
 ): OfferEventView {
   const party = e.actorCompany
     ? partyOf(e.actorCompany.id, carrierCompanyId, shipperCompanyId)
     : "SYSTEM";
+  // An individual's name is only shown to their own side (or admin). The other
+  // party sees the acting side, never the person — no cross-boundary PII.
+  const showName = viewer === "ADMIN" || party === viewer;
   return {
     id: e.id,
     type: e.type,
-    actorUserId: e.actorUserId,
-    actorName: e.actor ? `${e.actor.firstName} ${e.actor.lastName}` : null,
+    actorUserId: showName ? e.actorUserId : null,
+    actorName: showName && e.actor ? `${e.actor.firstName} ${e.actor.lastName}` : null,
     actorParty: party,
     createdAt: e.createdAt.toISOString(),
   };
@@ -149,7 +153,7 @@ export function toThreadView(t: DetailRow, viewer: ViewerParty, now: Date = new 
       equipmentType: t.load.equipmentType,
     },
     rounds: t.rounds.map((r) => toRoundView(r, t.carrierCompanyId, shipperCompanyId, now)),
-    events: t.events.map((e) => toEventView(e, t.carrierCompanyId, shipperCompanyId)),
+    events: t.events.map((e) => toEventView(e, t.carrierCompanyId, shipperCompanyId, viewer)),
     actions: {
       canCounter: iRespond,
       canAccept: iRespond,
