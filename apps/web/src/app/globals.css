@@ -1,49 +1,40 @@
-:root {
-  color-scheme: light dark;
-  --bg: #0b1220;
-  --fg: #e6edf3;
-  --muted: #9aa7b4;
-  --accent: #4c9ffe;
+@import "tailwindcss";
+
+@theme {
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-400: #818cf8;
+  --color-brand-500: #4f46e5;
+  --color-brand-600: #4338ca;
+  --color-brand-700: #3730a3;
+  --color-brand-900: #1e1b4b;
+  --color-accent-500: #f59e0b;
+  --color-accent-600: #d97706;
+
+  --color-ink: #0f172a;
+  --color-muted: #64748b;
+  --color-line: #e2e8f0;
+  --color-canvas: #f8fafc;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+html,
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
 }
 
 * {
-  box-sizing: border-box;
+  border-color: var(--color-line);
 }
 
-body {
-  margin: 0;
-  font-family:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  background: var(--bg);
-  color: var(--fg);
-  line-height: 1.5;
+/* Subtle utility so buttons/inputs feel consistent */
+.lt-focus {
+  outline: 2px solid transparent;
 }
-
-main {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 4rem 1.5rem;
-}
-
-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  background: rgba(255, 255, 255, 0.08);
-  padding: 0.1rem 0.35rem;
-  border-radius: 4px;
-}
-
-.card {
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  padding: 1rem 1.25rem;
-  margin-top: 1rem;
-}
-
-.pill {
-  display: inline-block;
-  font-size: 0.75rem;
-  padding: 0.15rem 0.55rem;
-  border-radius: 999px;
-  border: 1px solid var(--accent);
-  color: var(--accent);
+.lt-focus:focus-visible {
+  outline: 2px solid var(--color-brand-500);
+  outline-offset: 1px;
 }
