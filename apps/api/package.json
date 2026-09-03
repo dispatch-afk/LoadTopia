@@ -23,6 +23,7 @@
     "@loadtopia/providers": "workspace:*",
     "@loadtopia/shared": "workspace:*",
     "@node-rs/argon2": "^2.0.2",
+    "@prisma/client": "^6.2.1",
     "fastify": "^5.2.1",
     "fastify-plugin": "^5.0.1",
     "pino": "^9.6.0",
