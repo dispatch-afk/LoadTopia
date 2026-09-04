@@ -1,6 +1,7 @@
 import { EXPOSED_LOAD_STATUSES, isLoadOnMarket, nextLoadStatuses } from "@loadtopia/domain";
 import { type LoadEventView, type LoadListItem, type LoadView } from "@loadtopia/shared";
 import type { Prisma } from "@loadtopia/db";
+import { MOCK_PROVIDER_NAME } from "@loadtopia/providers";
 import { money } from "../../lib/money";
 import { toLocationView } from "../locations/locations.service";
 
@@ -64,7 +65,7 @@ function toEventView(e: LoadDetailRow["events"][number]): LoadEventView {
   };
 }
 
-export function toLoadView(l: LoadDetailRow, isMockRouting: boolean): LoadView {
+export function toLoadView(l: LoadDetailRow): LoadView {
   return {
     id: l.id,
     referenceNumber: l.referenceNumber,
@@ -84,7 +85,12 @@ export function toLoadView(l: LoadDetailRow, isMockRouting: boolean): LoadView {
       miles: metersToMiles(l.distanceMeters),
       driveTimeMinutes: l.driveTimeMinutes,
       provider: l.routingProvider,
-      isMock: l.routingProvider != null ? isMockRouting : false,
+      // Derived from the PROVIDER NAME STORED ON THIS LOAD at routing time —
+      // never from whichever routing provider is currently configured. A load
+      // routed by the mock before a production cutover to Google must keep
+      // showing as mock forever; it must never be relabeled "real" just
+      // because the registry's active adapter changed later.
+      isMock: l.routingProvider === MOCK_PROVIDER_NAME,
       routedAt: l.routedAt?.toISOString() ?? null,
     },
     availableTransitions: nextLoadStatuses(l.status).filter((s) => EXPOSED_LOAD_STATUSES.includes(s)),

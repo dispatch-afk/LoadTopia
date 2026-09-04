@@ -56,6 +56,14 @@ export interface RouteRequest {
 export interface RouteResult extends ProviderProvenance {
   distanceMeters: number;
   durationSeconds: number;
+  /**
+   * Encoded route polyline, when the adapter requested and Google returned
+   * one. Transient only — no current call site persists this (see
+   * `apps/api/src/modules/loads/routing.ts`). Reserved so a future Places
+   * "search along route" provider can consume it without another
+   * RoutingProvider interface change.
+   */
+  encodedPolyline?: string;
 }
 export interface RoutingProvider extends BaseProvider {
   getRoute(request: RouteRequest): Promise<RouteResult>;

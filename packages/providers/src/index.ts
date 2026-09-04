@@ -10,4 +10,7 @@ export {
   MockStorageProvider,
   MockTrackingProvider,
 } from "./mock/mock-misc-providers";
-export { MOCK_DISCLAIMER, MOCK_VERIFICATION_DISCLAIMER } from "./mock/shared";
+export { MOCK_DISCLAIMER, MOCK_PROVIDER_NAME, MOCK_VERIFICATION_DISCLAIMER } from "./mock/shared";
+export { GoogleGeocodingProvider } from "./google/google-geocoding-provider";
+export { GoogleRoutingProvider } from "./google/google-routing-provider";
+export { GoogleProviderError } from "./google/shared";
