@@ -402,8 +402,8 @@ suite("marketplace (integration)", () => {
   it("a load cannot be awarded twice", async () => {
     const s = await shipper();
     const loadId = await postedLoad(s);
-    const c1 = await carrier({ name: "A" });
-    const c2 = await carrier({ name: "B" });
+    const c1 = await carrier({ name: "Carrier A" });
+    const c2 = await carrier({ name: "Carrier B" });
     const r1 = (await makeOffer(c1, loadId, "1800.00")).json().rounds[0].id;
     const r2 = (await makeOffer(c2, loadId, "1700.00")).json().rounds[0].id;
 
@@ -459,9 +459,15 @@ suite("marketplace (integration)", () => {
     const created = (await makeOffer(c1, loadId, "1800.00")).json();
     const round = created.rounds[0].id;
 
-    for (const url of [`/api/offers/rounds/${round}/counter`, `/api/offers/rounds/${round}/accept`]) {
+    // /counter takes a counter payload; /accept takes no body. Both must 404 for
+    // an outsider — resource scope is resolved regardless of the body.
+    const cases: Array<[string, Record<string, unknown> | undefined]> = [
+      [`/api/offers/rounds/${round}/counter`, offerBody("1000.00")],
+      [`/api/offers/rounds/${round}/accept`, undefined],
+    ];
+    for (const [url, payload] of cases) {
       const res = await api.inject(
-        authed(outsider.cookie, { method: "POST", url, payload: offerBody("1000.00") }),
+        authed(outsider.cookie, { method: "POST", url, ...(payload ? { payload } : {}) }),
       );
       expect(res.statusCode, url).toBe(404);
     }

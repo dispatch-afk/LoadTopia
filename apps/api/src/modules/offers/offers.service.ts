@@ -342,6 +342,11 @@ export class OffersService {
     const now = new Date();
     const expiresAt = computeExpiry(now, input.expiresInHours);
 
+    // Set when the current round is found expired: the lazy EXPIRED write + event
+    // must COMMIT (throwing from inside $transaction would roll them back), so we
+    // return from the callback and raise the 409 afterwards.
+    let expired = false;
+
     await this.prisma.$transaction(async (tx) => {
       await this.lockThread(tx, thread.id);
       const t = await tx.offerThread.findUniqueOrThrow({
@@ -353,7 +358,8 @@ export class OffersService {
       });
 
       if (await this.expireIfStale(tx, t, t.currentRound, now)) {
-        throw conflict("This offer has expired");
+        expired = true;
+        return;
       }
       if (!isThreadActive(t.status)) throw conflict("This negotiation is closed");
       if (t.currentRoundId !== roundId) {
@@ -393,6 +399,8 @@ export class OffersService {
         },
       });
     });
+
+    if (expired) throw conflict("This offer has expired");
 
     return this.threadViewById(thread.id, viewer);
   }
@@ -434,6 +442,11 @@ export class OffersService {
     const loadId = thread.loadId;
     const now = new Date();
 
+    // Set when the current round is found expired: the lazy EXPIRED write + event
+    // must COMMIT (throwing from inside $transaction would roll them back), so we
+    // return from the callback and raise the 409 afterwards.
+    let expired = false;
+
     await this.prisma.$transaction(async (tx) => {
       await this.lockLoad(tx, loadId);
 
@@ -446,7 +459,8 @@ export class OffersService {
       });
 
       if (await this.expireIfStale(tx, t, t.currentRound, now)) {
-        throw new AppError(409, "OFFER_EXPIRED", "This offer has expired and cannot be accepted");
+        expired = true;
+        return;
       }
 
       const loadRow = await tx.load.findUniqueOrThrow({
@@ -535,6 +549,10 @@ export class OffersService {
         }
       }
     });
+
+    if (expired) {
+      throw new AppError(409, "OFFER_EXPIRED", "This offer has expired and cannot be accepted");
+    }
 
     return this.threadViewById(thread.id, viewer);
   }
