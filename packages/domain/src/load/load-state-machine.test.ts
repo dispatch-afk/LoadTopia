@@ -1,11 +1,13 @@
 import { LOAD_STATUSES, LoadStatus } from "@loadtopia/shared";
 import { describe, expect, it } from "vitest";
 import {
+  EXPOSED_LOAD_STATUSES,
   LOAD_STATUS_TRANSITIONS,
   LoadTransitionError,
   assertLoadTransition,
   canCancelLoad,
   canTransitionLoad,
+  isExposedLoadStatus,
   isTerminalLoadStatus,
   nextLoadStatuses,
 } from "./load-state-machine";
@@ -82,5 +84,26 @@ describe("load state machine", () => {
     expect(canTransitionLoad(LoadStatus.DRAFT, LoadStatus.COMPLETED)).toBe(false);
     expect(canTransitionLoad(LoadStatus.DRAFT, LoadStatus.DELIVERED)).toBe(false);
     expect(canTransitionLoad(LoadStatus.POSTED, LoadStatus.COMPLETED)).toBe(false);
+  });
+
+  it("supports the Milestone 2 marketplace progression", () => {
+    expect(canTransitionLoad(LoadStatus.POSTED, LoadStatus.OFFER_RECEIVED)).toBe(true);
+    expect(canTransitionLoad(LoadStatus.OFFER_RECEIVED, LoadStatus.AWARDED)).toBe(true);
+    expect(canTransitionLoad(LoadStatus.POSTED, LoadStatus.AWARDED)).toBe(true);
+    expect(canTransitionLoad(LoadStatus.AWARDED, LoadStatus.CARRIER_ASSIGNED)).toBe(true);
+    // Controlled cancellation still reachable through the marketplace states.
+    expect(canCancelLoad(LoadStatus.OFFER_RECEIVED)).toBe(true);
+    expect(canCancelLoad(LoadStatus.AWARDED)).toBe(true);
+    expect(canCancelLoad(LoadStatus.CARRIER_ASSIGNED)).toBe(true);
+  });
+
+  it("exposes only DRAFT..CARRIER_ASSIGNED + CANCELLED (no execution states yet)", () => {
+    expect([...EXPOSED_LOAD_STATUSES].sort()).toEqual(
+      ["DRAFT", "POSTED", "OFFER_RECEIVED", "AWARDED", "CARRIER_ASSIGNED", "CANCELLED"].sort(),
+    );
+    expect(isExposedLoadStatus(LoadStatus.PICKED_UP)).toBe(false);
+    expect(isExposedLoadStatus(LoadStatus.DELIVERED)).toBe(false);
+    expect(isExposedLoadStatus(LoadStatus.COMPLETED)).toBe(false);
+    expect(isExposedLoadStatus(LoadStatus.AWARDED)).toBe(true);
   });
 });

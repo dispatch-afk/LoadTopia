@@ -79,6 +79,28 @@ export interface PriceEstimate extends ProviderProvenance {
   /** Non-empty for mock/estimated data. Surfaced to users verbatim. */
   disclaimer: string | null;
 }
+// --- Carrier verification (Milestone 2) ------------------------------------ --
+export interface CarrierVerificationRequest {
+  legalName: string;
+  mcNumber?: string;
+  dotNumber?: string;
+}
+export interface CarrierVerificationResult extends ProviderProvenance {
+  /** `verified` = safe to admit to the marketplace; `failed`/`not_found` = not. */
+  status: "verified" | "failed" | "not_found";
+  authorityStatus: "active" | "inactive" | "unknown";
+  insuranceOnFile: boolean | null;
+  reference: string | null;
+  /**
+   * Non-null for mock/synthetic checks. This is NOT FMCSA / DOT / SAFER /
+   * insurance / government verification and must never be presented as such.
+   */
+  disclaimer: string | null;
+}
+export interface CarrierVerificationProvider extends BaseProvider {
+  verify(request: CarrierVerificationRequest): Promise<CarrierVerificationResult>;
+}
+
 export interface PricingProvider extends BaseProvider {
   estimate(request: PriceEstimateRequest): Promise<PriceEstimate>;
 }
@@ -169,6 +191,7 @@ export interface ProviderRegistry {
   routing: RoutingProvider;
   pricing: PricingProvider;
   geocoding: GeocodingProvider;
+  carrierVerification: CarrierVerificationProvider;
   payment: PaymentProvider;
   storage: StorageProvider;
   notification: NotificationProvider;

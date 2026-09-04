@@ -43,7 +43,16 @@ describe("loadEnv", () => {
 
   it("exposes a full provider selection", () => {
     expect(Object.keys(providerSelection(loadEnv(base))).sort()).toEqual(
-      ["geocoding", "notification", "payment", "pricing", "routing", "storage", "tracking"].sort(),
+      [
+        "carrierVerification",
+        "geocoding",
+        "notification",
+        "payment",
+        "pricing",
+        "routing",
+        "storage",
+        "tracking",
+      ].sort(),
     );
   });
 });

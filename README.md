@@ -6,14 +6,17 @@ LoadTopia provides the technology, pricing intelligence, trust, and transaction
 infrastructure that lets a shipper and a carrier transact directly — making a
 broker unnecessary when the two can deal with each other.
 
-> **Status: Milestone 1 — Foundation.**
-> Shippers can manage freight internally: companies, team members (membership-based
-> auth + multi-company switching), a reusable location book, equipment, and loads
-> with a server-authoritative `DRAFT ⇄ POSTED → CANCELLED` lifecycle, immutable
-> load events, and routing (miles + drive time) via the provider abstraction.
-> **Not built:** the marketplace, carrier visibility, offers, pricing, tracking,
-> documents, and payments. Loads are private to the owning shipper company.
-> See [`docs/MILESTONE-1.md`](docs/MILESTONE-1.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status: Milestone 2 — Marketplace (in review).**
+> On top of the Milestone 1 foundation (companies, membership auth, location book,
+> equipment, private shipper loads), LoadTopia is now a two-sided marketplace:
+> eligible carriers discover posted freight on a server-filtered load board,
+> submit offers, counter back and forth over an immutable round history, and one
+> offer is **atomically awarded** (`DRAFT → POSTED → OFFER_RECEIVED → AWARDED →
+> CARRIER_ASSIGNED`). Carrier authority/insurance verification and lane pricing go
+> through provider abstractions with clearly-labelled `[MOCK]` implementations.
+> **Not built:** tracking, documents, payments/payouts, real external integrations.
+> See [`docs/MILESTONE-2.md`](docs/MILESTONE-2.md),
+> [`docs/MILESTONE-1.md`](docs/MILESTONE-1.md), and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -28,7 +31,7 @@ broker unnecessary when the two can deal with each other.
 | ORM          | Prisma 6 (migrations, type-safe client)                              |
 | Auth         | Argon2id password hashing + opaque server-side sessions (httpOnly cookies) |
 | AuthZ        | RBAC via a permission catalogue; role lives on company membership     |
-| Providers    | `RoutingProvider`, `PricingProvider`, `GeocodingProvider`, `PaymentProvider`, `StorageProvider`, `NotificationProvider`, `TrackingProvider` — swappable; mock impls for dev |
+| Providers    | `RoutingProvider`, `PricingProvider`, `CarrierVerificationProvider`, `GeocodingProvider`, `PaymentProvider`, `StorageProvider`, `NotificationProvider`, `TrackingProvider` — swappable; mock impls for dev |
 | Testing      | Vitest (unit + integration); Fastify `inject()` for API tests         |
 | Local infra  | Docker Compose (PostgreSQL)                                          |
 

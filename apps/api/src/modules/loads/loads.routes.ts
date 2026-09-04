@@ -99,6 +99,20 @@ export async function loadsRoutes(app: FastifyInstance): Promise<void> {
     return load;
   });
 
+  app.post("/loads/:id/assign", { preHandler: [app.requireActiveCompany] }, async (request) => {
+    const actor = request.currentUser!;
+    const { id } = idParam.parse(request.params);
+    const load = await service.assign(actor, id);
+    await writeAudit(app.prisma, request, {
+      actorUserId: actor.userId,
+      action: "load.assign",
+      entityType: "load",
+      entityId: id,
+      data: { carrierCompanyId: load.marketplace.award?.carrierCompanyId ?? null },
+    });
+    return load;
+  });
+
   app.post("/loads/:id/cancel", { preHandler: [app.requireActiveCompany] }, async (request) => {
     const actor = request.currentUser!;
     const { id } = idParam.parse(request.params);

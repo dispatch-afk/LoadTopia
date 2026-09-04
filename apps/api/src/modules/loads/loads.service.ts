@@ -8,7 +8,6 @@ import {
   assertLoadWindows,
   buildLoadCreatedEvent,
   buildLoadUpdatedEvent,
-  buildStatusChangeEvent,
   canCancelLoad,
   formatLoadNumber,
   Permission,
@@ -26,24 +25,24 @@ import {
   type UpdateLoadInput,
 } from "@loadtopia/shared";
 import { badRequest, conflict, notFound } from "../../lib/errors";
+import { appendLoadEvent, atomicLoadTransition } from "../../lib/load-lifecycle";
 import { paginate, toSkipTake } from "../../lib/pagination";
-import {
-  loadDetailInclude,
-  loadListInclude,
-  M1_EXPOSED_STATUSES,
-  toLoadListItem,
-  toLoadView,
-} from "./loads.serializer";
+import { PricingService } from "../pricing/pricing.service";
+import { loadDetailInclude, loadListInclude, toLoadListItem, toLoadView } from "./loads.serializer";
 import { computeRouting } from "./routing";
 
 const parseDate = (v: string | null | undefined): Date | null => (v == null ? null : new Date(v));
 
 export class LoadsService {
+  private readonly pricing: PricingService;
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly providers: ProviderRegistry,
     private readonly log: { warn: (obj: unknown, msg: string) => void },
-  ) {}
+  ) {
+    this.pricing = new PricingService(prisma, providers.pricing);
+  }
 
   private get routingIsMock(): boolean {
     return this.providers.routing.isMock;
@@ -315,6 +314,54 @@ export class LoadsService {
     await this.transition(id, load.status, LoadStatus.POSTED, actor.userId, {
       postedAt: new Date(),
     });
+
+    // Capture an immutable pricing snapshot at post time so the price the
+    // marketplace was posted at is always reproducible. Best-effort — a pricing
+    // hiccup must never block posting the load.
+    const lane = await this.prisma.load.findUniqueOrThrow({
+      where: { id },
+      select: {
+        equipmentType: true,
+        mode: true,
+        distanceMeters: true,
+        origin: { select: { state: true } },
+        destination: { select: { state: true } },
+      },
+    });
+    await this.pricing.snapshotForLoad(
+      this.prisma,
+      {
+        id,
+        equipmentType: lane.equipmentType,
+        mode: lane.mode,
+        distanceMeters: lane.distanceMeters,
+        originState: lane.origin.state,
+        destinationState: lane.destination.state,
+      },
+      actor.userId,
+      this.log,
+    );
+
+    return this.loadDetail(id);
+  }
+
+  /**
+   * `AWARDED → CARRIER_ASSIGNED`. The shipper confirms the awarded carrier is
+   * assigned to run the load. (The carrier was set atomically at award time.)
+   */
+  async assign(actor: AuthenticatedActor, id: string): Promise<LoadView> {
+    const load = await this.prisma.load.findUnique({ where: { id } });
+    if (!load) throw notFound("Load not found");
+    assertCanModifyLoad(actor, load);
+    assertPermission(actor, Permission.LOAD_UPDATE_OWN);
+
+    assertLoadTransition(load.status, LoadStatus.CARRIER_ASSIGNED);
+    if (!load.carrierCompanyId) {
+      throw conflict("This load has no awarded carrier to assign");
+    }
+    await this.transition(id, load.status, LoadStatus.CARRIER_ASSIGNED, actor.userId, {
+      assignedAt: new Date(),
+    });
     return this.loadDetail(id);
   }
 
@@ -353,51 +400,13 @@ export class LoadsService {
     extra: Prisma.LoadUncheckedUpdateManyInput,
     note?: string,
   ): Promise<void> {
-    assertLoadTransition(from, to);
-    if (!M1_EXPOSED_STATUSES.includes(to)) {
-      // Defence in depth: Milestone 1 endpoints only ever target DRAFT/POSTED/CANCELLED.
-      throw conflict("That transition is not available yet");
-    }
-    await this.prisma.$transaction(async (tx) => {
-      // Atomic compare-and-set: only the row still in `from` is updated. Under
-      // concurrent identical transitions the row lock serialises the two
-      // `updateMany`s and the second sees `status = to` (not `from`) -> count 0
-      // -> 409, so exactly ONE transition and ONE event ever land.
-      const result = await tx.load.updateMany({
-        where: { id, status: from },
-        data: { ...extra, status: to, updatedByUserId: actorUserId },
-      });
-      if (result.count === 0) {
-        throw conflict("The load changed while you were working on it. Reload and try again.");
-      }
-      await this.appendEvent(
-        tx,
-        buildStatusChangeEvent({
-          loadId: id,
-          fromStatus: from,
-          toStatus: to,
-          actorUserId,
-          note,
-        }),
-      );
-    });
+    await this.prisma.$transaction((tx) =>
+      atomicLoadTransition(tx, { id, from, to, actorUserId, extra, note }),
+    );
   }
 
-  private async appendEvent(
-    tx: Prisma.TransactionClient,
-    draft: LoadEventDraft,
-  ): Promise<void> {
-    await tx.loadEvent.create({
-      data: {
-        loadId: draft.loadId,
-        type: draft.type,
-        fromStatus: draft.fromStatus,
-        toStatus: draft.toStatus,
-        actorUserId: draft.actorUserId,
-        note: draft.note,
-        data: (draft.data ?? undefined) as Prisma.InputJsonValue | undefined,
-      },
-    });
+  private async appendEvent(tx: Prisma.TransactionClient, draft: LoadEventDraft): Promise<void> {
+    await appendLoadEvent(tx, draft);
   }
 
   private async requireOwnedLocations(companyId: string, ids: string[]) {

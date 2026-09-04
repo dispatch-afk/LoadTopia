@@ -1,7 +1,7 @@
 # LoadTopia — Roadmap
 
-High-level milestone plan. Each milestone is authorized separately. Nothing past
-Milestone 0 is built yet.
+High-level milestone plan. Each milestone is authorized separately. Milestones 0–2
+are built; Milestone 2 is in review.
 
 ---
 
@@ -33,46 +33,53 @@ offers, booking, tracking, documents, payments.
 Loads are private to the shipper company — no carrier visibility. See
 [`MILESTONE-1.md`](MILESTONE-1.md).
 
-## Milestone 2 — Marketplace & discovery
+## Milestone 2 — Marketplace: discovery, offers & award ✅ (in review)
 
-- Carrier-facing load board (`marketplace:browse`) with filters (lane, equipment,
-  date, weight) and saved searches.
-- Carrier profile + equipment/lane preferences.
-- Basic matching: surface relevant loads to carriers.
+Scope grew to a complete transact-directly loop (see [`MILESTONE-2.md`](MILESTONE-2.md)):
+
+- ✅ Carrier marketplace profile (identity, equipment, service area) + carrier
+  authority/insurance **verification abstraction** (`CarrierVerificationProvider`,
+  `[MOCK]` impl — never presented as FMCSA/DOT/insurance/government).
+- ✅ Server-authoritative eligibility + carrier load board (`marketplace:browse`)
+  with lane/equipment/date/weight/distance filters, deterministic ordering,
+  offset pagination.
+- ✅ Offers + counteroffers over an **immutable `OfferRound` history**
+  (`OfferThread` state machine: `ACTIVE → ACCEPTED|REJECTED|WITHDRAWN|EXPIRED`),
+  append-only `offer_events`, server-authoritative lazy expiration.
+- ✅ **Atomic load award** (`SELECT … FOR UPDATE` + compare-and-set + partial
+  unique backstop) → `DRAFT → POSTED → OFFER_RECEIVED → AWARDED → CARRIER_ASSIGNED`.
+- ✅ `PricingProvider` estimates + **immutable `PricingSnapshot`s** (auto at post
+  time; reproducible, never silently recomputed).
+- ✅ Admin eligibility override + marketplace overview.
+- Deferred: saved searches, richer matching/ranking, booking confirmation
+  notifications via `NotificationProvider`, `lane_statistics` aggregation.
 
 ## Milestone 3 — Pricing intelligence (v1)
 
-- `pricing_snapshots` captured at post time and at booking.
-- `PricingProvider` wired into load posting to show a rate band (still mock until
-  a real data agreement exists — clearly labelled).
-- `lane_statistics` aggregation job from `load_events` + `market_rates`.
+- Real `PricingProvider` data agreement (replace `[MOCK]`), rate-band surfacing
+  refinements, `lane_statistics` aggregation from `load_events` + `market_rates`.
+- Booking confirmation + rate-lock UX; notifications via `NotificationProvider`.
 
-## Milestone 4 — Offers, counteroffers, booking
-
-- `load_offers` with the counteroffer chain (`parent_offer_id`).
-- Offer lifecycle → load `AWARDED` / `CARRIER_ASSIGNED`.
-- Booking confirmation + rate lock; notifications via `NotificationProvider`.
-
-## Milestone 5 — Execution, tracking, documents
+## Milestone 4 — Execution, tracking, documents
 
 - `tracking_events` / `carrier_locations` ingested via `TrackingProvider`.
 - Status updates (`PICKED_UP` → `IN_TRANSIT` → `DELIVERED`).
 - `documents` (rate confirmation, BOL, POD) via `StorageProvider` (signed URLs).
 - Proof of delivery capture → `COMPLETED`.
 
-## Milestone 6 — Payments & payouts
+## Milestone 5 — Payments & payouts
 
 - `PaymentProvider` (real): shipper charge on booking/delivery.
 - Carrier `payouts`, `invoices`, `fees`, `transactions`.
 - Disputes.
 
-## Milestone 7 — Enterprise & platform
+## Milestone 6 — Enterprise & platform
 
 - `api_keys` + `API_CLIENT` role; public REST API + webhooks (`integrations`).
 - `ENTERPRISE_ADMIN`, `DISPATCHER`, `DRIVER`, `ACCOUNTING`, `OPERATIONS_MANAGER` roles.
 - `subscriptions` / billing plans.
 
-## Milestone 8 — LoadTopia intelligence
+## Milestone 7 — LoadTopia intelligence
 
 - `LoadTopiaPricingProvider` blending market data + proprietary transaction
   history, acceptance rates, time-to-cover, seasonality.

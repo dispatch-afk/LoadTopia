@@ -15,8 +15,16 @@ declare module "fastify" {
     requirePermission: (
       permission: Permission,
     ) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    /** preHandler factory: authenticate, then 403 unless the active role holds ANY of the permissions. */
+    requireAnyPermission: (
+      ...permissions: Permission[]
+    ) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     /** preHandler: authenticate, then 409 unless the request has an active company context. */
     requireActiveCompany: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    /** preHandler factory: authenticate → require active company → require ANY permission. */
+    requireCompanyPermission: (
+      ...permissions: Permission[]
+    ) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 
   interface FastifyRequest {

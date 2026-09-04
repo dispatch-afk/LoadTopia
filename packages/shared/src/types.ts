@@ -1,8 +1,13 @@
 import type {
+  CarrierOperatingStatus,
+  CarrierVerificationStatus,
   CompanyType,
   EquipmentType,
   LoadEventType,
   LoadStatus,
+  MarketplaceEligibility,
+  OfferEventType,
+  OfferThreadStatus,
   TransportMode,
   UserRole,
 } from "./enums";
@@ -170,9 +175,197 @@ export interface LoadView {
   updatedByUserId: string | null;
   postedAt: string | null;
   cancelledAt: string | null;
+  /** Marketplace (Milestone 2): active-offer count + award outcome. */
+  marketplace: LoadMarketplaceView;
   createdAt: string;
   updatedAt: string;
   events: LoadEventView[];
+}
+
+export interface LoadMarketplaceView {
+  onMarket: boolean;
+  activeOfferCount: number;
+  award: {
+    carrierCompanyId: string;
+    carrierName: string;
+    offerRoundId: string;
+    amount: string;
+    currency: string;
+    awardedAt: string;
+    assignedAt: string | null;
+  } | null;
+}
+
+// --- Marketplace: carrier profile ---------------------------------------- --
+
+export interface CarrierProfileView {
+  id: string;
+  companyId: string;
+  legalName: string;
+  mcNumber: string | null;
+  dotNumber: string | null;
+  operatingStatus: CarrierOperatingStatus;
+  marketplaceEligibility: MarketplaceEligibility;
+  eligibilityReason: string | null;
+  verification: {
+    status: CarrierVerificationStatus;
+    provider: string | null;
+    isMock: boolean | null;
+    note: string | null;
+    verifiedAt: string | null;
+  };
+  equipmentTypes: EquipmentType[];
+  serviceAreaStates: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EligibilityView {
+  eligible: boolean;
+  reasons: string[];
+}
+
+// --- Marketplace: load board -------------------------------------------- ---
+
+export interface MarketplaceLoadListItem {
+  id: string;
+  referenceNumber: string;
+  status: LoadStatus;
+  equipmentType: EquipmentType;
+  mode: TransportMode;
+  commodity: string | null;
+  weightLbs: number | null;
+  origin: { city: string; state: string };
+  destination: { city: string; state: string };
+  pickupWindowStart: string | null;
+  pickupWindowEnd: string | null;
+  deliveryWindowStart: string | null;
+  deliveryWindowEnd: string | null;
+  miles: number | null;
+  driveTimeMinutes: number | null;
+  shipperName: string;
+  postedAt: string | null;
+  /** This carrier's negotiation on this load, if any. */
+  myThread: OfferThreadSummary | null;
+}
+
+export interface MarketplaceLoadView extends MarketplaceLoadListItem {
+  eligibility: EligibilityView;
+}
+
+// --- Marketplace: offers / negotiation --------------------------------- ----
+
+export interface OfferRoundView {
+  id: string;
+  roundNumber: number;
+  proposedByCompanyId: string;
+  proposedByParty: "CARRIER" | "SHIPPER";
+  proposedByName: string;
+  amount: string;
+  currency: string;
+  message: string | null;
+  expiresAt: string;
+  isExpired: boolean;
+  createdAt: string;
+}
+
+export interface OfferEventView {
+  id: string;
+  type: OfferEventType;
+  actorUserId: string | null;
+  actorName: string | null;
+  actorParty: "CARRIER" | "SHIPPER" | "SYSTEM";
+  createdAt: string;
+}
+
+export interface OfferThreadSummary {
+  threadId: string;
+  loadId: string;
+  status: OfferThreadStatus;
+  roundCount: number;
+  currentAmount: string | null;
+  currentCurrency: string;
+  currentExpiresAt: string | null;
+  /** True when it is this viewer's turn to respond to the current round. */
+  awaitingMyResponse: boolean;
+  carrier: { companyId: string; name: string } | null;
+  updatedAt: string;
+}
+
+export interface OfferThreadView extends OfferThreadSummary {
+  load: {
+    id: string;
+    referenceNumber: string;
+    status: LoadStatus;
+    origin: { city: string; state: string };
+    destination: { city: string; state: string };
+    equipmentType: EquipmentType;
+  };
+  rounds: OfferRoundView[];
+  events: OfferEventView[];
+  /** Actions the current viewer may take on the current round / thread. */
+  actions: {
+    canCounter: boolean;
+    canAccept: boolean;
+    canReject: boolean;
+    canWithdraw: boolean;
+  };
+}
+
+// --- Marketplace: pricing --------------------------------------------- -----
+
+export interface PricingEstimateView {
+  currency: string;
+  lowRate: string;
+  midRate: string;
+  highRate: string;
+  ratePerMile: string | null;
+  confidence: "low" | "medium" | "high";
+  provider: string;
+  isMock: boolean;
+  disclaimer: string | null;
+  distanceMeters: number | null;
+  retrievedAt: string;
+  snapshotId: string | null;
+}
+
+export interface PricingSnapshotView {
+  id: string;
+  loadId: string;
+  provider: string;
+  isMock: boolean;
+  currency: string;
+  lowRate: string;
+  midRate: string;
+  highRate: string;
+  ratePerMile: string | null;
+  confidence: string;
+  disclaimer: string | null;
+  distanceMeters: number | null;
+  createdAt: string;
+}
+
+// --- Marketplace: admin ------------------------------------------------ ----
+
+export interface AdminCarrierProfileRow {
+  companyId: string;
+  companyName: string;
+  legalName: string;
+  mcNumber: string | null;
+  dotNumber: string | null;
+  operatingStatus: CarrierOperatingStatus;
+  marketplaceEligibility: MarketplaceEligibility;
+  verificationStatus: CarrierVerificationStatus;
+  verificationIsMock: boolean | null;
+  activeOffers: number;
+  updatedAt: string;
+}
+
+export interface AdminMarketplaceOverview {
+  loads: { posted: number; offerReceived: number; awarded: number; carrierAssigned: number };
+  offers: { activeThreads: number; acceptedThreads: number };
+  carrierProfiles: Record<MarketplaceEligibility, number>;
+  providers: Record<string, { status: string; isMock: boolean; message?: string }>;
 }
 
 export interface ApiErrorBody {

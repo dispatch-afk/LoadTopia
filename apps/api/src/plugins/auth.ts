@@ -44,4 +44,33 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
       }
     };
   });
+
+  /**
+   * preHandler factory: authenticate, then 403 unless the active role holds AT
+   * LEAST ONE of the permissions. Used where two roles reach the same endpoint
+   * from different sides (e.g. a carrier and a shipper both act on an offer).
+   */
+  app.decorate("requireAnyPermission", (...permissions: Permission[]) => {
+    return async (request: FastifyRequest, reply: FastifyReply) => {
+      await app.authenticate(request, reply);
+      const actor = request.currentUser;
+      if (!actor || !permissions.some((p) => hasPermission(actor, p))) {
+        throw forbidden();
+      }
+    };
+  });
+
+  /**
+   * preHandler factory (marketplace): authenticate → require an active company →
+   * require ANY of the permissions — all in a single session resolution, so the
+   * documented order (auth → active company → permission → scope → validate) is
+   * followed without resolving the session twice.
+   */
+  app.decorate("requireCompanyPermission", (...permissions: Permission[]) => {
+    return async (request: FastifyRequest, reply: FastifyReply) => {
+      await app.requireActiveCompany(request, reply);
+      const actor = request.currentUser!;
+      if (!permissions.some((p) => hasPermission(actor, p))) throw forbidden();
+    };
+  });
 });

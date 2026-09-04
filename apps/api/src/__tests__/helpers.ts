@@ -16,6 +16,7 @@ export const allMockProviders = () =>
     routing: "mock",
     pricing: "mock",
     geocoding: "mock",
+    carrierVerification: "mock",
     payment: "mock",
     storage: "mock",
     notification: "mock",

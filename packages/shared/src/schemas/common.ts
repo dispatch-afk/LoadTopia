@@ -30,7 +30,18 @@ export const moneySchema = z
   .string()
   .regex(/^-?\d{1,12}(\.\d{1,2})?$/, "must be a decimal string with up to 2 places");
 
-export const currencySchema = z.string().length(3).default("USD");
+/**
+ * A positive monetary amount (offers, rates). Decimal string, 1–2 fractional
+ * digits, max 9,999,999.99. Compared/persisted with exact decimal semantics —
+ * never parsed to a JS float for storage or comparison.
+ */
+export const positiveMoneySchema = z
+  .string()
+  .trim()
+  .regex(/^\d{1,7}(\.\d{1,2})?$/, "must be a positive amount with up to 2 decimal places")
+  .refine((v) => Number.parseFloat(v) > 0, "must be greater than zero");
+
+export const currencySchema = z.string().length(3).toUpperCase().default("USD");
 
 // --- Address components (US/CA freight) ------------------------------------
 export const stateSchema = z

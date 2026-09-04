@@ -1,14 +1,8 @@
-import { nextLoadStatuses } from "@loadtopia/domain";
-import { LoadStatus, type LoadEventView, type LoadListItem, type LoadView } from "@loadtopia/shared";
+import { EXPOSED_LOAD_STATUSES, isLoadOnMarket, nextLoadStatuses } from "@loadtopia/domain";
+import { type LoadEventView, type LoadListItem, type LoadView } from "@loadtopia/shared";
 import type { Prisma } from "@loadtopia/db";
+import { money } from "../../lib/money";
 import { toLocationView } from "../locations/locations.service";
-
-/** Lifecycle states LoadTopia exposes in Milestone 1 (no marketplace states). */
-export const M1_EXPOSED_STATUSES: readonly LoadStatus[] = [
-  LoadStatus.DRAFT,
-  LoadStatus.POSTED,
-  LoadStatus.CANCELLED,
-];
 
 const METERS_PER_MILE = 1609.344;
 
@@ -25,6 +19,9 @@ export const loadListInclude = {
 export const loadDetailInclude = {
   origin: true,
   destination: true,
+  carrierCompany: { select: { id: true, name: true } },
+  awardedOfferRound: { select: { amount: true, currency: true } },
+  offerThreads: { where: { status: "ACTIVE" }, select: { id: true } },
   events: {
     orderBy: { createdAt: "asc" },
     include: { actor: { select: { firstName: true, lastName: true } } },
@@ -90,13 +87,28 @@ export function toLoadView(l: LoadDetailRow, isMockRouting: boolean): LoadView {
       isMock: l.routingProvider != null ? isMockRouting : false,
       routedAt: l.routedAt?.toISOString() ?? null,
     },
-    availableTransitions: nextLoadStatuses(l.status).filter((s) =>
-      M1_EXPOSED_STATUSES.includes(s),
-    ),
+    availableTransitions: nextLoadStatuses(l.status).filter((s) => EXPOSED_LOAD_STATUSES.includes(s)),
     createdByUserId: l.createdByUserId,
     updatedByUserId: l.updatedByUserId,
     postedAt: l.postedAt?.toISOString() ?? null,
     cancelledAt: l.cancelledAt?.toISOString() ?? null,
+    marketplace: {
+      onMarket: isLoadOnMarket(l.status),
+      activeOfferCount: l.offerThreads.length,
+      // The award columns are all written atomically together (see OffersService).
+      award:
+        l.awardedOfferRoundId && l.awardedOfferRound && l.carrierCompany
+          ? {
+              carrierCompanyId: l.carrierCompany.id,
+              carrierName: l.carrierCompany.name,
+              offerRoundId: l.awardedOfferRoundId,
+              amount: money(l.bookedRate ?? l.awardedOfferRound.amount),
+              currency: l.awardedOfferRound.currency,
+              awardedAt: (l.awardedAt ?? l.updatedAt).toISOString(),
+              assignedAt: l.assignedAt?.toISOString() ?? null,
+            }
+          : null,
+    },
     createdAt: l.createdAt.toISOString(),
     updatedAt: l.updatedAt.toISOString(),
     events: l.events.map(toEventView),

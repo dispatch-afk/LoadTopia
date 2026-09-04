@@ -6,6 +6,14 @@ export const MOCK_DISCLAIMER =
   "DEVELOPMENT MOCK DATA — deterministic synthetic values, NOT live market data. " +
   "Never present to end users as real pricing, routing, or tracking information.";
 
+export const MOCK_VERIFICATION_DISCLAIMER =
+  "[MOCK] deterministic development verification — NOT FMCSA, DOT, SAFER, " +
+  "insurance, or any government verification. Do not represent as such.";
+
+/** Health message prefix so mock providers are unmistakable in system output. */
+export const mockHealthMessage = (what: string) =>
+  `[MOCK] ${what} — deterministic development data, not real-world data`;
+
 export function mockProvenance(metadata?: Record<string, unknown>): ProviderProvenance {
   return {
     provider: MOCK_PROVIDER_NAME,

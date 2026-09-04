@@ -36,6 +36,23 @@ export function LoadActions({ load }: { load: LoadView }) {
   const canCancel = load.availableTransitions.includes("CANCELLED");
   const canEdit = load.status === "DRAFT";
   const canDelete = load.status === "DRAFT";
+  const canEstimate = load.status === "DRAFT" || load.status === "POSTED";
+
+  async function estimate() {
+    setBusy("estimate");
+    setError(null);
+    try {
+      await apiClient("/pricing/estimate", {
+        method: "POST",
+        body: JSON.stringify({ loadId: load.id }),
+      });
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not get an estimate");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   return (
     <div className="space-y-3">
@@ -77,6 +94,11 @@ export function LoadActions({ load }: { load: LoadView }) {
             disabled={busy !== null}
           >
             {busy === "delete" && <Spinner />} Delete
+          </Button>
+        )}
+        {canEstimate && (
+          <Button variant="secondary" onClick={estimate} disabled={busy !== null}>
+            {busy === "estimate" && <Spinner />} Get pricing estimate
           </Button>
         )}
       </div>

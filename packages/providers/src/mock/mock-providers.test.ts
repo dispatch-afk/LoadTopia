@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createProviderRegistry, type ProviderSelection } from "../registry";
+import { MockCarrierVerificationProvider } from "./mock-carrier-verification-provider";
 import { MockPricingProvider } from "./mock-pricing-provider";
 import { MockRoutingProvider } from "./mock-routing-provider";
 
@@ -7,6 +8,7 @@ const ALL_MOCK: ProviderSelection = {
   routing: "mock",
   pricing: "mock",
   geocoding: "mock",
+  carrierVerification: "mock",
   payment: "mock",
   storage: "mock",
   notification: "mock",
@@ -46,15 +48,45 @@ describe("MockPricingProvider", () => {
   });
 });
 
+describe("MockCarrierVerificationProvider", () => {
+  it("returns a deterministic verdict flagged as mock with a NOT-government disclaimer", async () => {
+    const p = new MockCarrierVerificationProvider();
+    const req = { legalName: "Blue Ridge Carriers", mcNumber: "MC-123456", dotNumber: "1234567" };
+    const a = await p.verify(req);
+    const b = await p.verify(req);
+    expect(a.isMock).toBe(true);
+    expect(a.provider).toBe("mock");
+    expect(a.disclaimer).toMatch(/NOT FMCSA/i);
+    expect(a.status).toBe(b.status);
+    expect(["verified", "failed"]).toContain(a.status);
+  });
+
+  it("is not_found for a carrier with neither MC nor DOT number", async () => {
+    const r = await new MockCarrierVerificationProvider().verify({ legalName: "Nameless LLC" });
+    expect(r.status).toBe("not_found");
+    expect(r.authorityStatus).toBe("unknown");
+  });
+});
+
 describe("createProviderRegistry", () => {
-  it("wires all seven providers when every selection is 'mock'", async () => {
+  it("wires every provider when all selections are 'mock'", async () => {
     const reg = createProviderRegistry(ALL_MOCK);
     expect(Object.keys(reg).sort()).toEqual(
-      ["geocoding", "notification", "payment", "pricing", "routing", "storage", "tracking"].sort(),
+      [
+        "carrierVerification",
+        "geocoding",
+        "notification",
+        "payment",
+        "pricing",
+        "routing",
+        "storage",
+        "tracking",
+      ].sort(),
     );
     for (const provider of Object.values(reg)) {
       expect(provider.isMock).toBe(true);
-      expect((await provider.health()).status).toBe("ok");
+      const h = await provider.health();
+      expect(h.status).toBe("ok");
     }
   });
 

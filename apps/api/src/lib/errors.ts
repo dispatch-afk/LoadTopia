@@ -29,6 +29,11 @@ const DOMAIN_ERROR_CODES = new Set([
   "VALIDATION_ERROR",
   "INVALID_LOAD_TRANSITION",
   "COMPANY_CONTEXT",
+  // Marketplace domain errors (@loadtopia/domain marketplace/*). Each carries a
+  // numeric statusCode; the handler below trusts it (default 409 for the
+  // transition error, which mirrors INVALID_LOAD_TRANSITION).
+  "NEGOTIATION_RULE",
+  "INVALID_OFFER_TRANSITION",
 ]);
 
 function isDomainError(

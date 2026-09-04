@@ -33,6 +33,13 @@ const EnvSchema = z.object({
   RATE_LIMIT_WINDOW: z.string().default("1 minute"),
   AUTH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
   AUTH_RATE_LIMIT_WINDOW: z.string().default("1 minute"),
+  // Marketplace writes are more abuse-sensitive than ordinary CRUD but must stay
+  // usable for a busy dispatcher. Generous per-user limits; searches use the
+  // global limit.
+  MARKETPLACE_WRITE_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
+  MARKETPLACE_WRITE_RATE_LIMIT_WINDOW: z.string().default("1 minute"),
+  MARKETPLACE_AWARD_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(15),
+  MARKETPLACE_AWARD_RATE_LIMIT_WINDOW: z.string().default("1 minute"),
 
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
@@ -41,6 +48,7 @@ const EnvSchema = z.object({
   ROUTING_PROVIDER: providerChoice,
   PRICING_PROVIDER: providerChoice,
   GEOCODING_PROVIDER: providerChoice,
+  CARRIER_VERIFICATION_PROVIDER: providerChoice,
   PAYMENT_PROVIDER: providerChoice,
   STORAGE_PROVIDER: providerChoice,
   NOTIFICATION_PROVIDER: providerChoice,
@@ -76,6 +84,7 @@ export function providerSelection(env: Env) {
     routing: env.ROUTING_PROVIDER,
     pricing: env.PRICING_PROVIDER,
     geocoding: env.GEOCODING_PROVIDER,
+    carrierVerification: env.CARRIER_VERIFICATION_PROVIDER,
     payment: env.PAYMENT_PROVIDER,
     storage: env.STORAGE_PROVIDER,
     notification: env.NOTIFICATION_PROVIDER,

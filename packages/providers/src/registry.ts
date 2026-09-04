@@ -1,4 +1,5 @@
 import type { ProviderName, ProviderRegistry } from "./types";
+import { MockCarrierVerificationProvider } from "./mock/mock-carrier-verification-provider";
 import { MockPricingProvider } from "./mock/mock-pricing-provider";
 import { MockRoutingProvider } from "./mock/mock-routing-provider";
 import {
@@ -24,6 +25,9 @@ export function createProviderRegistry(selection: ProviderSelection): ProviderRe
     routing: build("routing", selection.routing, { mock: () => new MockRoutingProvider() }),
     pricing: build("pricing", selection.pricing, { mock: () => new MockPricingProvider() }),
     geocoding: build("geocoding", selection.geocoding, { mock: () => new MockGeocodingProvider() }),
+    carrierVerification: build("carrierVerification", selection.carrierVerification, {
+      mock: () => new MockCarrierVerificationProvider(),
+    }),
     payment: build("payment", selection.payment, { mock: () => new MockPaymentProvider() }),
     storage: build("storage", selection.storage, { mock: () => new MockStorageProvider() }),
     notification: build("notification", selection.notification, {

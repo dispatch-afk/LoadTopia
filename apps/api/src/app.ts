@@ -8,12 +8,17 @@ import { prismaPlugin } from "./plugins/prisma";
 import { providersPlugin } from "./plugins/providers";
 import { requestContextPlugin } from "./plugins/request-context";
 import { securityPlugin } from "./plugins/security";
+import { adminMarketplaceRoutes } from "./modules/admin/admin-marketplace.routes";
 import { authRoutes } from "./modules/auth/auth.routes";
+import { carrierProfileRoutes } from "./modules/carrier/carrier-profile.routes";
 import { companiesRoutes } from "./modules/companies/companies.routes";
 import { equipmentRoutes } from "./modules/equipment/equipment.routes";
 import { healthRoutes } from "./modules/health/health.routes";
 import { loadsRoutes } from "./modules/loads/loads.routes";
 import { locationsRoutes } from "./modules/locations/locations.routes";
+import { marketplaceRoutes } from "./modules/marketplace/marketplace.routes";
+import { offersRoutes } from "./modules/offers/offers.routes";
+import { pricingRoutes } from "./modules/pricing/pricing.routes";
 
 export interface BuildAppOptions {
   env?: Env;
@@ -62,6 +67,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await api.register(locationsRoutes);
       await api.register(equipmentRoutes);
       await api.register(loadsRoutes);
+      // Marketplace (Milestone 2)
+      await api.register(carrierProfileRoutes);
+      await api.register(pricingRoutes);
+      await api.register(marketplaceRoutes);
+      await api.register(offersRoutes);
+      await api.register(adminMarketplaceRoutes);
     },
     { prefix: "/api" },
   );

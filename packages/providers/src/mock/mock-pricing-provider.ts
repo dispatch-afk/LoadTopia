@@ -1,5 +1,5 @@
 import type { PriceEstimate, PriceEstimateRequest, PricingProvider, ProviderHealth } from "../types";
-import { MOCK_DISCLAIMER, mockProvenance, seededValue } from "./shared";
+import { MOCK_DISCLAIMER, mockHealthMessage, mockProvenance, seededValue } from "./shared";
 
 /**
  * MockPricingProvider — DEVELOPMENT ONLY.
@@ -39,6 +39,6 @@ export class MockPricingProvider implements PricingProvider {
   }
 
   async health(): Promise<ProviderHealth> {
-    return { status: "ok", isMock: true, message: "mock pricing provider (development)" };
+    return { status: "ok", isMock: true, message: mockHealthMessage("PricingProvider") };
   }
 }
