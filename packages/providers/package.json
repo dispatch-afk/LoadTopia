@@ -14,7 +14,8 @@
     "test:integration": "echo \"(no integration tests)\" && exit 0"
   },
   "dependencies": {
-    "@loadtopia/shared": "workspace:*"
+    "@loadtopia/shared": "workspace:*",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "typescript": "^5.7.3",

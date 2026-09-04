@@ -1,4 +1,7 @@
-import type { ProviderName, ProviderRegistry } from "./types";
+import type { GeocodingProvider, ProviderName, ProviderRegistry, RoutingProvider } from "./types";
+import { GoogleGeocodingProvider } from "./google/google-geocoding-provider";
+import { GoogleRoutingProvider } from "./google/google-routing-provider";
+import { resolveApiKey } from "./google/shared";
 import { MockCarrierVerificationProvider } from "./mock/mock-carrier-verification-provider";
 import { MockPricingProvider } from "./mock/mock-pricing-provider";
 import { MockRoutingProvider } from "./mock/mock-routing-provider";
@@ -14,17 +17,41 @@ import {
 export type ProviderSelection = Record<ProviderName, string>;
 
 /**
+ * Google Maps Platform API key(s). `mapsApiKey` is the shared fallback;
+ * `routesApiKey`/`geocodingApiKey` optionally override it per API. Resolution
+ * (and the "no key configured" failure) happens inside `createProviderRegistry`,
+ * at boot, via {@link resolveApiKey} — never lazily on first request.
+ */
+export interface GoogleCredentials {
+  mapsApiKey?: string;
+  routesApiKey?: string;
+  geocodingApiKey?: string;
+}
+
+/**
  * Builds the concrete provider set from configuration.
  *
- * Phase 0 ships only `mock` adapters. Selecting any other value fails loudly so
- * a misconfigured environment can never silently fall back to synthetic data in
- * production. Real adapters get registered here as they are implemented.
+ * Every adapter is chosen ONCE, here, at boot. Selecting any value with no
+ * matching adapter fails loudly (see `build` below) so a misconfigured
+ * environment can never silently fall back to synthetic data in production —
+ * there is deliberately no try-Google/catch/use-mock path anywhere in this
+ * package.
  */
-export function createProviderRegistry(selection: ProviderSelection): ProviderRegistry {
+export function createProviderRegistry(
+  selection: ProviderSelection,
+  google: GoogleCredentials = {},
+): ProviderRegistry {
   return {
-    routing: build("routing", selection.routing, { mock: () => new MockRoutingProvider() }),
+    routing: build<RoutingProvider>("routing", selection.routing, {
+      mock: () => new MockRoutingProvider(),
+      google: () => new GoogleRoutingProvider(resolveApiKey(google.routesApiKey, google.mapsApiKey)),
+    }),
     pricing: build("pricing", selection.pricing, { mock: () => new MockPricingProvider() }),
-    geocoding: build("geocoding", selection.geocoding, { mock: () => new MockGeocodingProvider() }),
+    geocoding: build<GeocodingProvider>("geocoding", selection.geocoding, {
+      mock: () => new MockGeocodingProvider(),
+      google: () =>
+        new GoogleGeocodingProvider(resolveApiKey(google.geocodingApiKey, google.mapsApiKey)),
+    }),
     carrierVerification: build("carrierVerification", selection.carrierVerification, {
       mock: () => new MockCarrierVerificationProvider(),
     }),

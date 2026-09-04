@@ -1,4 +1,5 @@
 import { PrismaClient } from "@loadtopia/db";
+import type { ProviderRegistry } from "@loadtopia/providers";
 import type { FastifyInstance, InjectOptions } from "fastify";
 import { buildApp } from "../app";
 import { loadEnv } from "../config/env";
@@ -39,13 +40,26 @@ export async function resetDb(prisma: PrismaClient): Promise<void> {
 }
 
 export async function makeApp(prisma: PrismaClient): Promise<FastifyInstance> {
+  return makeAppWithProviders(prisma, allMockProviders());
+}
+
+/**
+ * Same as {@link makeApp}, with a caller-supplied provider registry — used to
+ * exercise behavior under a non-mock (e.g. `isMock: false`, "google"-named)
+ * routing/geocoding adapter without ever making a real network call: pass a
+ * small hand-written test double implementing the provider interface.
+ */
+export async function makeAppWithProviders(
+  prisma: PrismaClient,
+  providers: ProviderRegistry,
+): Promise<FastifyInstance> {
   const env = loadEnv({
     NODE_ENV: "test",
     DATABASE_URL: TEST_DB_URL,
     LOG_LEVEL: "silent",
     ARGON_MEMORY_KIB: "8192",
   } as NodeJS.ProcessEnv);
-  return buildApp({ env, prisma, providers: allMockProviders() });
+  return buildApp({ env, prisma, providers });
 }
 
 export interface Session {

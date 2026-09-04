@@ -53,6 +53,14 @@ const EnvSchema = z.object({
   STORAGE_PROVIDER: providerChoice,
   NOTIFICATION_PROVIDER: providerChoice,
   TRACKING_PROVIDER: providerChoice,
+
+  // Google Maps Platform (real routing/geocoding). Only consulted when
+  // ROUTING_PROVIDER/GEOCODING_PROVIDER is "google" — createProviderRegistry
+  // fails loudly at boot if that provider is selected and no key resolves.
+  // Server-side only; never read by the web app.
+  GOOGLE_MAPS_API_KEY: z.string().optional(),
+  GOOGLE_ROUTES_API_KEY: z.string().optional(),
+  GOOGLE_GEOCODING_API_KEY: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -89,5 +97,13 @@ export function providerSelection(env: Env) {
     storage: env.STORAGE_PROVIDER,
     notification: env.NOTIFICATION_PROVIDER,
     tracking: env.TRACKING_PROVIDER,
+  };
+}
+
+export function googleCredentials(env: Env) {
+  return {
+    mapsApiKey: env.GOOGLE_MAPS_API_KEY,
+    routesApiKey: env.GOOGLE_ROUTES_API_KEY,
+    geocodingApiKey: env.GOOGLE_GEOCODING_API_KEY,
   };
 }

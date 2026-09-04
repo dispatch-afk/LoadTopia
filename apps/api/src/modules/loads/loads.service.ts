@@ -44,16 +44,12 @@ export class LoadsService {
     this.pricing = new PricingService(prisma, providers.pricing);
   }
 
-  private get routingIsMock(): boolean {
-    return this.providers.routing.isMock;
-  }
-
   private async loadDetail(id: string): Promise<LoadView> {
     const row = await this.prisma.load.findUniqueOrThrow({
       where: { id },
       include: loadDetailInclude,
     });
-    return toLoadView(row, this.routingIsMock);
+    return toLoadView(row);
   }
 
   // -- create --------------------------------------------------------------
@@ -310,6 +306,17 @@ export class LoadsService {
       deliveryWindowStart: load.deliveryWindowStart,
       deliveryWindowEnd: load.deliveryWindowEnd,
     });
+
+    // Under a REAL routing provider, a load with no computed distance means
+    // routing genuinely failed (Google outage/quota/bad coordinates) — never
+    // let that reach the marketplace, where MockPricingProvider would fall
+    // back to a fully synthetic lane distance as if the route had succeeded.
+    // Mock routing never fails, so this can't block local/CI/test posting.
+    if (!this.providers.routing.isMock && load.distanceMeters == null) {
+      throw conflict(
+        "Route mileage could not be calculated. Verify the origin and destination and retry routing before posting.",
+      );
+    }
 
     await this.transition(id, load.status, LoadStatus.POSTED, actor.userId, {
       postedAt: new Date(),

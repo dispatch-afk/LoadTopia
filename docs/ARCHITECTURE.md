@@ -232,11 +232,11 @@ DRAFT → POSTED → OFFER_RECEIVED → AWARDED → CARRIER_ASSIGNED
 Every external dependency is an interface here; application code imports only the
 interface. Each response carries provenance: `{ provider, isMock, retrievedAt, metadata }`.
 
-| Interface              | Phase 0 impl            | Future impls (examples)                     |
-| ---------------------- | ----------------------- | ------------------------------------------ |
-| `RoutingProvider`      | `MockRoutingProvider`   | PC*MILER, HERE, Mapbox                      |
+| Interface              | Mock impl (default)     | Real impl                                    |
+| ---------------------- | ------------------------ | -------------------------------------------- |
+| `RoutingProvider`      | `MockRoutingProvider`   | `GoogleRoutingProvider` (Routes API, `travelMode: DRIVE`) |
 | `PricingProvider`      | `MockPricingProvider`   | DAT, Truckstop, `LoadTopiaPricingProvider`  |
-| `GeocodingProvider`    | `MockGeocodingProvider` | Mapbox, Google, US Census                   |
+| `GeocodingProvider`    | `MockGeocodingProvider` | `GoogleGeocodingProvider` (Geocoding API)    |
 | `PaymentProvider`      | `MockPaymentProvider`   | Stripe, Adyen, a factoring partner          |
 | `StorageProvider`      | `MockStorageProvider`   | AWS S3, GCS                                 |
 | `NotificationProvider` | `MockNotificationProvider` | Postmark/SES (email), Twilio (SMS)       |
@@ -246,11 +246,40 @@ Rules:
 
 - Mocks are **deterministic** and set `isMock: true`; pricing mocks also set a
   non-null `disclaimer` string that the API and UI must surface verbatim.
-- `createProviderRegistry` **throws** on any non-`mock` selection until a real
-  adapter is implemented — a misconfigured prod environment cannot silently serve
-  synthetic data.
+- `createProviderRegistry` **throws** on any unimplemented selection, and on
+  `google` with no API key configured — a misconfigured environment fails at
+  boot rather than silently serving synthetic data. There is no runtime
+  fallback from a real provider to a mock.
+- A load's `isMock` routing flag is derived from the provider name **stored on
+  that load** (`routingProvider`), never from whichever adapter is currently
+  configured — a load routed by the mock keeps showing as mock even after a
+  later production cutover to `google`.
 - No undocumented third-party APIs, no credentials, no fabricated responses in
   this repo.
+
+### Google Maps Platform (routing + geocoding)
+
+`ROUTING_PROVIDER`/`GEOCODING_PROVIDER` accept `google` in addition to `mock`.
+Real, server-side only (`packages/providers/src/google/`); the API key is
+never read by `apps/web` and never reaches the browser.
+
+- **Phase 1 scope**: real road distance/duration (`travelMode: DRIVE`) and
+  real geocoding. **Not** truck-restriction-aware routing — Google's large
+  vehicle / `TRUCK` travel mode needs vehicle height/width/length/weight/axle
+  data LoadTopia does not collect anywhere today, and is a separately
+  access-gated Google feature. Do not represent Phase 1 routing as
+  truck-aware.
+- **Render (production)**: `ROUTING_PROVIDER=google`, `GEOCODING_PROVIDER=google`,
+  `GOOGLE_MAPS_API_KEY=<secret>` (optionally split into
+  `GOOGLE_ROUTES_API_KEY`/`GOOGLE_GEOCODING_API_KEY`, both falling back to
+  `GOOGLE_MAPS_API_KEY`). Requires the **Routes API** and **Geocoding API**
+  enabled on the Google Cloud project, with the key restricted to those APIs.
+- **Local dev / CI**: leave unset — both providers default to `mock`.
+- A routing failure never blocks creating or saving a load/location. It does
+  block **posting**: if the configured routing provider is real (`isMock:
+  false`) and a load has no computed distance, `POST /api/loads/:id/post`
+  returns 409 rather than letting the marketplace post with a `MockPricingProvider`
+  fallback to a fully synthetic lane distance as if routing had succeeded.
 
 ### Pricing (strategic)
 
