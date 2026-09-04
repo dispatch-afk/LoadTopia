@@ -399,6 +399,157 @@ suite("marketplace (integration)", () => {
     expect(assign.json().status).toBe("CARRIER_ASSIGNED");
   });
 
+  // ── awarded-load carrier visibility (hotfix/m2-carrier-awarded-load) ──
+  //
+  // After award the load leaves the marketplace. The winning carrier must still
+  // be able to view it via the authenticated load endpoint (canReadLoad); every
+  // other carrier must keep getting 404. Marketplace visibility is unchanged.
+
+  it("the winning carrier can GET /api/loads/:id after award; unrelated carriers get 404", async () => {
+    const s = await shipper();
+    const loadId = await postedLoad(s);
+    const winner = await carrier({ name: "Winner Co" });
+    const rival = await carrier({ name: "Rival Co" });
+    const outsider = await carrier({ name: "Outsider Co" });
+
+    const t = (await makeOffer(winner, loadId, "1800.00")).json();
+    await makeOffer(rival, loadId, "1700.00");
+    const accept = await api.inject(
+      authed(s.cookie, { method: "POST", url: `/api/offers/rounds/${t.rounds[0].id}/accept` }),
+    );
+    expect(accept.statusCode).toBe(200);
+
+    // Winner: 200 via the authenticated load endpoint, with its own award data.
+    const w = await api.inject(authed(winner.cookie, { method: "GET", url: `/api/loads/${loadId}` }));
+    expect(w.statusCode).toBe(200);
+    expect(w.json().status).toBe("AWARDED");
+    expect(w.json().marketplace.award.carrierCompanyId).toBe(winner.companyId);
+    expect(w.json().marketplace.award.amount).toBe("1800.00");
+    // No competitor offer data leaks through the load view.
+    expect(w.json().marketplace.activeOfferCount).toBe(0);
+    expect(JSON.stringify(w.json())).not.toContain("1700.00");
+    expect(JSON.stringify(w.json())).not.toContain("Rival Co");
+
+    // The losing bidder and a never-involved carrier: 404 from both endpoints.
+    for (const c of [rival, outsider]) {
+      const viaLoads = await api.inject(
+        authed(c.cookie, { method: "GET", url: `/api/loads/${loadId}` }),
+      );
+      expect(viaLoads.statusCode, `loads ${c.companyId}`).toBe(404);
+      const viaMkt = await api.inject(
+        authed(c.cookie, { method: "GET", url: `/api/marketplace/loads/${loadId}` }),
+      );
+      expect(viaMkt.statusCode, `marketplace ${c.companyId}`).toBe(404);
+    }
+
+    // Marketplace visibility unchanged: the awarded load is on nobody's board and
+    // its marketplace detail 404s even for the winner.
+    for (const c of [winner, rival, outsider]) {
+      const board = await api.inject(
+        authed(c.cookie, { method: "GET", url: "/api/marketplace/loads" }),
+      );
+      expect(board.json().data.map((l: { id: string }) => l.id)).not.toContain(loadId);
+    }
+    const winnerMkt = await api.inject(
+      authed(winner.cookie, { method: "GET", url: `/api/marketplace/loads/${loadId}` }),
+    );
+    expect(winnerMkt.statusCode).toBe(404);
+
+    // The winner's own ACCEPTED thread is still fetchable, with carrier identity
+    // redacted and no competitor amounts.
+    const threadView = await api.inject(
+      authed(winner.cookie, { method: "GET", url: `/api/offers/threads/${t.threadId}` }),
+    );
+    expect(threadView.statusCode).toBe(200);
+    expect(threadView.json().status).toBe("ACCEPTED");
+    expect(threadView.json().carrier).toBeNull();
+    expect(threadView.json().rounds.map((r: { amount: string }) => r.amount)).toEqual(["1800.00"]);
+    expect(JSON.stringify(threadView.json())).not.toContain("1700.00");
+
+    // The rival cannot read the winner's thread.
+    const crossThread = await api.inject(
+      authed(rival.cookie, { method: "GET", url: `/api/offers/threads/${t.threadId}` }),
+    );
+    expect(crossThread.statusCode).toBe(404);
+
+    // Shipper access is unchanged.
+    const shipperLoad = await api.inject(
+      authed(s.cookie, { method: "GET", url: `/api/loads/${loadId}` }),
+    );
+    expect(shipperLoad.statusCode).toBe(200);
+    expect(shipperLoad.json().marketplace.award.carrierCompanyId).toBe(winner.companyId);
+    const shipperOffers = await api.inject(
+      authed(s.cookie, { method: "GET", url: `/api/loads/${loadId}/offers` }),
+    );
+    expect(shipperOffers.json().data).toHaveLength(2);
+  });
+
+  it("CARRIER_ASSIGNED keeps the same visibility: winner 200, unrelated carrier 404", async () => {
+    const s = await shipper();
+    const loadId = await postedLoad(s);
+    const winner = await carrier({ name: "Assigned Co" });
+    const outsider = await carrier({ name: "Bystander Co" });
+
+    const t = (await makeOffer(winner, loadId, "1900.00")).json();
+    await api.inject(
+      authed(s.cookie, { method: "POST", url: `/api/offers/rounds/${t.rounds[0].id}/accept` }),
+    );
+    const assign = await api.inject(
+      authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }),
+    );
+    expect(assign.json().status).toBe("CARRIER_ASSIGNED");
+
+    const w = await api.inject(authed(winner.cookie, { method: "GET", url: `/api/loads/${loadId}` }));
+    expect(w.statusCode).toBe(200);
+    expect(w.json().status).toBe("CARRIER_ASSIGNED");
+    expect(w.json().marketplace.award.assignedAt).toBeTruthy();
+
+    const o = await api.inject(
+      authed(outsider.cookie, { method: "GET", url: `/api/loads/${loadId}` }),
+    );
+    expect(o.statusCode).toBe(404);
+    const oMkt = await api.inject(
+      authed(outsider.cookie, { method: "GET", url: `/api/marketplace/loads/${loadId}` }),
+    );
+    expect(oMkt.statusCode).toBe(404);
+  });
+
+  it("carrier-authorized dashboard endpoints all succeed; GET /api/loads stays 403", async () => {
+    const s = await shipper();
+    await postedLoad(s);
+    const c = await carrier({ name: "Dashboard Co" });
+
+    for (const url of [
+      "/api/offers",
+      "/api/offers?status=ACTIVE",
+      "/api/offers?status=ACCEPTED",
+      "/api/carrier/profile",
+      "/api/marketplace/loads",
+      "/api/locations",
+      "/api/equipment",
+    ]) {
+      const res = await api.inject(authed(c.cookie, { method: "GET", url }));
+      expect(res.statusCode, url).toBe(200);
+    }
+
+    // The carrier dashboard must never call the shipper load list — it 403s.
+    const loads = await api.inject(authed(c.cookie, { method: "GET", url: "/api/loads" }));
+    expect(loads.statusCode).toBe(403);
+    expect(loads.json().error.code).toBe("FORBIDDEN");
+
+    // A not-yet-eligible carrier's board call 403s (the dashboard handles this).
+    const pending = await carrier({ name: "Pending Co", eligible: false });
+    const board = await api.inject(
+      authed(pending.cookie, { method: "GET", url: "/api/marketplace/loads" }),
+    );
+    expect(board.statusCode).toBe(403);
+    // ...but its other dashboard endpoints still work.
+    for (const url of ["/api/offers", "/api/carrier/profile", "/api/locations", "/api/equipment"]) {
+      const res = await api.inject(authed(pending.cookie, { method: "GET", url }));
+      expect(res.statusCode, url).toBe(200);
+    }
+  });
+
   it("a load cannot be awarded twice", async () => {
     const s = await shipper();
     const loadId = await postedLoad(s);
