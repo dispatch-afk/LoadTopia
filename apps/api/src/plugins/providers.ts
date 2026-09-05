@@ -1,7 +1,7 @@
 import { createProviderRegistry, type ProviderRegistry } from "@loadtopia/providers";
 import type { FastifyInstance } from "fastify";
 import fp from "fastify-plugin";
-import { googleCredentials, providerSelection } from "../config/env";
+import { googleCredentials, providerSelection, storageCredentials } from "../config/env";
 
 interface ProvidersPluginOptions {
   registry?: ProviderRegistry;
@@ -10,7 +10,11 @@ interface ProvidersPluginOptions {
 export const providersPlugin = fp<ProvidersPluginOptions>(async (app: FastifyInstance, opts) => {
   const registry =
     opts.registry ??
-    createProviderRegistry(providerSelection(app.env), googleCredentials(app.env));
+    createProviderRegistry(
+      providerSelection(app.env),
+      googleCredentials(app.env),
+      storageCredentials(app.env),
+    );
   app.decorate("providers", registry);
 
   const mocks = Object.entries(registry)

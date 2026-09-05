@@ -149,20 +149,68 @@ export interface PaymentProvider extends BaseProvider {
 }
 
 // --- Storage ------------------------------------------------------------- ---
+
+/**
+ * A trusted, server-constructed upload authorization request. Every field is
+ * chosen by the API/service layer from the approved document rules — never by
+ * the browser. `key` is a server-generated object key; `maxBytes` is a hard
+ * upper bound the storage layer itself must enforce (see `SignedUploadResult`).
+ */
 export interface SignedUploadRequest {
   key: string;
   contentType: string;
-  maxBytes?: number;
+  /** Hard maximum object size. Required — a signed upload with no size bound
+   *  cannot be enforced at the storage layer and must never be issued. */
+  maxBytes: number;
 }
 export interface SignedUploadResult extends ProviderProvenance {
   url: string;
   method: "PUT" | "POST";
   headers: Record<string, string>;
+  /**
+   * Presigned-POST form fields the browser must submit verbatim as multipart
+   * form-data alongside the file. Present when `method === "POST"` (the S3
+   * path — the only mechanism that genuinely enforces `content-length-range`
+   * and an exact `Content-Type` at the storage layer). Absent for `PUT`.
+   */
+  fields?: Record<string, string>;
   expiresAt: string;
 }
+
+/** Authoritative metadata for a stored object, from a HEAD-equivalent lookup.
+ *  Establishes storage facts only — it does NOT prove the bytes are a
+ *  semantically valid PDF/image, and `etag` is not a security signal. */
+export interface StoredObjectMetadata {
+  key: string;
+  contentLength: number;
+  /** Null when the store does not expose a stored Content-Type. */
+  contentType: string | null;
+  etag?: string;
+}
+
+/** A server-side write of generated content (e.g. a rendered Rate
+ *  Confirmation PDF) — no browser upload URL involved. */
+export interface PutObjectRequest {
+  key: string;
+  contentType: string;
+  body: Uint8Array;
+}
+
 export interface StorageProvider extends BaseProvider {
   createSignedUpload(request: SignedUploadRequest): Promise<SignedUploadResult>;
   createSignedDownload(key: string): Promise<{ url: string; expiresAt: string } & ProviderProvenance>;
+  /**
+   * HEAD-equivalent. Returns authoritative metadata for a stored object, or
+   * `null` if it does not exist. Used by the two-stage upload CONFIRM step to
+   * check the client's PUT/POST actually landed the expected object.
+   */
+  headObject(key: string): Promise<StoredObjectMetadata | null>;
+  /**
+   * Store `body` under the caller's exact `key`. Overwrites the same
+   * deterministic key idempotently on retry — never generates a key
+   * internally. Used for server-generated artifacts.
+   */
+  putObject(request: PutObjectRequest): Promise<{ key: string } & ProviderProvenance>;
 }
 
 // --- Notifications ------------------------------------------------------- ---

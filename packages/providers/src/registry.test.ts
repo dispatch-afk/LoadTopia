@@ -2,8 +2,16 @@ import { describe, expect, it } from "vitest";
 import { createProviderRegistry, type ProviderSelection } from "./registry";
 import { GoogleGeocodingProvider } from "./google/google-geocoding-provider";
 import { GoogleRoutingProvider } from "./google/google-routing-provider";
-import { MockGeocodingProvider } from "./mock/mock-misc-providers";
+import { MockGeocodingProvider, MockStorageProvider } from "./mock/mock-misc-providers";
 import { MockRoutingProvider } from "./mock/mock-routing-provider";
+import { S3StorageProvider } from "./s3/s3-storage-provider";
+
+const S3_CONFIG = {
+  region: "us-east-1",
+  bucket: "loadtopia-docs",
+  accessKeyId: "AKIA_TEST",
+  secretAccessKey: "secret_test",
+};
 
 const ALL_MOCK: ProviderSelection = {
   routing: "mock",
@@ -77,5 +85,43 @@ describe("createProviderRegistry — Google configuration", () => {
     }
     expect(threw).toBe(true);
     expect(reg).toBeUndefined();
+  });
+});
+
+describe("createProviderRegistry — S3 storage configuration", () => {
+  it("defaults storage to the (non-functional) mock provider", () => {
+    const reg = createProviderRegistry(ALL_MOCK);
+    expect(reg.storage).toBeInstanceOf(MockStorageProvider);
+    expect(reg.storage.isMock).toBe(true);
+  });
+
+  it("selecting s3 with a complete config constructs the real adapter", () => {
+    const reg = createProviderRegistry({ ...ALL_MOCK, storage: "s3" }, {}, S3_CONFIG);
+    expect(reg.storage).toBeInstanceOf(S3StorageProvider);
+    expect(reg.storage.isMock).toBe(false);
+    expect(reg.storage.name).toBe("s3");
+  });
+
+  it("selecting s3 with NO config fails at boot — never falls back to mock", () => {
+    let reg: ReturnType<typeof createProviderRegistry> | undefined;
+    let threw = false;
+    try {
+      reg = createProviderRegistry({ ...ALL_MOCK, storage: "s3" });
+    } catch (err) {
+      threw = true;
+      expect((err as Error).message).toMatch(/STORAGE_S3_/);
+    }
+    expect(threw).toBe(true);
+    expect(reg).toBeUndefined();
+  });
+
+  it("selecting s3 with partial config fails at boot", () => {
+    expect(() =>
+      createProviderRegistry({ ...ALL_MOCK, storage: "s3" }, {}, { region: "us-east-1", bucket: "b" }),
+    ).toThrow(/STORAGE_S3_ACCESS_KEY_ID, STORAGE_S3_SECRET_ACCESS_KEY/);
+  });
+
+  it("an unknown storage provider name fails at boot, same as every other provider", () => {
+    expect(() => createProviderRegistry({ ...ALL_MOCK, storage: "dropbox" })).toThrow(/Unknown storage/);
   });
 });
