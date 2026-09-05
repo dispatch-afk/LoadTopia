@@ -9,12 +9,14 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { writeAudit } from "../../lib/audit";
 import { assertResourceScope } from "../../lib/scoped-resource";
+import { RateConfirmationService } from "../rate-confirmations/rate-confirmation.service";
 import { LoadsService } from "./loads.service";
 
 const idParam = z.object({ id: uuidSchema });
 
 export async function loadsRoutes(app: FastifyInstance): Promise<void> {
   const service = new LoadsService(app.prisma, app.providers, app.log);
+  const rateConfirmations = new RateConfirmationService(app.prisma, app.providers.storage, app.log);
 
   app.post("/loads", { preHandler: [app.requireActiveCompany] }, async (request, reply) => {
     const actor = request.currentUser!;
@@ -112,6 +114,21 @@ export async function loadsRoutes(app: FastifyInstance): Promise<void> {
     });
     return load;
   });
+
+  // Rate Confirmation (Milestone 3). Readable by the owning shipper, the
+  // assigned/winning carrier, and admin — everyone else 404s (IDOR-safe).
+  // Lazily completes generation if the rendered PDF is not ready yet; returns a
+  // stable RATE_CONFIRMATION_NOT_AVAILABLE for any load awarded before this
+  // feature shipped (no snapshot is ever fabricated).
+  app.get(
+    "/loads/:id/rate-confirmation",
+    { preHandler: [app.requireActiveCompany] },
+    async (request) => {
+      const actor = request.currentUser!;
+      const { id } = idParam.parse(request.params);
+      return rateConfirmations.getForLoad(actor, id);
+    },
+  );
 
   app.post("/loads/:id/cancel", { preHandler: [app.requireActiveCompany] }, async (request) => {
     const actor = request.currentUser!;

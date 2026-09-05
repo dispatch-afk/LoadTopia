@@ -8,6 +8,7 @@ import type {
   MarketplaceEligibility,
   OfferEventType,
   OfferThreadStatus,
+  RateConfirmationStatus,
   TransportMode,
   UserRole,
 } from "./enums";
@@ -194,6 +195,59 @@ export interface LoadMarketplaceView {
     awardedAt: string;
     assignedAt: string | null;
   } | null;
+}
+
+// --- Operations (Milestone 3): Rate Confirmation ------------------------ ---
+
+export interface RateConfirmationAddressView {
+  addressLine1: string;
+  addressLine2: string | null;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string;
+}
+
+/**
+ * The LoadTopia-generated commercial record for an awarded load. Every field
+ * below is a read of the IMMUTABLE `rate_confirmations` snapshot — never
+ * recomputed from current mutable load/company/offer data.
+ *
+ * `download` is non-null only when a rendered PDF exists and object storage
+ * confirmed it. `documentPending` is true when the artifact is not available
+ * yet (generation still pending/failed, or storage temporarily degraded) — the
+ * commercial agreement itself is unaffected either way.
+ */
+export interface RateConfirmationView {
+  loadId: string;
+  referenceNumber: string;
+  status: RateConfirmationStatus;
+  awardedAt: string;
+  agreedRate: string;
+  currency: string;
+  distanceMeters: number | null;
+  shipper: {
+    companyName: string;
+    mcNumber: string | null;
+    dotNumber: string | null;
+  };
+  carrier: {
+    companyName: string;
+    legalName: string | null;
+    mcNumber: string | null;
+    dotNumber: string | null;
+  };
+  origin: RateConfirmationAddressView;
+  destination: RateConfirmationAddressView;
+  pickupWindowStart: string | null;
+  pickupWindowEnd: string | null;
+  deliveryWindowStart: string | null;
+  deliveryWindowEnd: string | null;
+  equipmentType: EquipmentType;
+  commodity: string | null;
+  weightLbs: number | null;
+  download: { url: string; expiresAt: string } | null;
+  documentPending: boolean;
 }
 
 // --- Marketplace: carrier profile ---------------------------------------- --

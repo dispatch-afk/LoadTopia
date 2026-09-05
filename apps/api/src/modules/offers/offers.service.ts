@@ -28,6 +28,8 @@ import {
 import { AppError, conflict, forbidden, notFound } from "../../lib/errors";
 import { loadCarrierEligibilityContext } from "../../lib/carrier-context";
 import { atomicLoadTransition, markLoadOfferReceived } from "../../lib/load-lifecycle";
+import { insertRateConfirmationSnapshot } from "../rate-confirmations/rate-confirmation.snapshot";
+import type { RateConfirmationGenerator } from "../rate-confirmations/rate-confirmation.service";
 import { toDecimal } from "../../lib/money";
 import { paginate, toSkipTake } from "../../lib/pagination";
 import {
@@ -53,7 +55,16 @@ type OfferEventKind = "CREATED" | "COUNTERED" | "ACCEPTED" | "REJECTED" | "WITHD
  * concurrently can never both win.
  */
 export class OffersService {
-  constructor(private readonly prisma: PrismaClient) {}
+  /**
+   * @param rateConfirmations Optional post-commit hook. When present,
+   *   {@link accept} renders + stores the Rate Confirmation PDF after the award
+   *   transaction commits (best-effort). The in-transaction commercial snapshot
+   *   INSERT always happens regardless — it has no storage dependency.
+   */
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly rateConfirmations?: RateConfirmationGenerator,
+  ) {}
 
   // ── low-level helpers ────────────────────────────────────────────────
 
@@ -549,10 +560,37 @@ export class OffersService {
           });
         }
       }
+
+      // Phase 1 of the Rate Confirmation: the immutable commercial snapshot,
+      // INSIDE this same award transaction. Coupled to the award on purpose —
+      // if it cannot be written, the award rolls back, so "exactly one snapshot
+      // per awarded load" is transactional. `now` is the SAME timestamp already
+      // used for Load.awardedAt / OfferThread.closedAt above. No storage here.
+      await insertRateConfirmationSnapshot(tx, {
+        loadId,
+        carrierCompanyId: t.carrierCompanyId,
+        awardedOfferRoundId: winningRound.id,
+        agreedRate: winningRound.amount,
+        currency: winningRound.currency,
+        awardedAt: now,
+      });
     });
 
     if (expired) {
       throw new AppError(409, "OFFER_EXPIRED", "This offer has expired and cannot be accepted");
+    }
+
+    // Phase 2 of the Rate Confirmation: render + store the PDF AFTER COMMIT.
+    // Best-effort and fully isolated — the generator never throws, and even if
+    // it did this catch would swallow it. A storage/render failure here leaves
+    // the committed award and its immutable snapshot untouched; retrieval
+    // retries later.
+    if (this.rateConfirmations) {
+      try {
+        await this.rateConfirmations.generateAfterAward(loadId);
+      } catch {
+        /* committed award is unaffected */
+      }
     }
 
     return this.threadViewById(thread.id, viewer);
