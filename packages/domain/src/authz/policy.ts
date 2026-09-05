@@ -1,5 +1,5 @@
 import type { AuthenticatedActor } from "@loadtopia/shared";
-import { UserRole } from "@loadtopia/shared";
+import { LoadStatus, UserRole } from "@loadtopia/shared";
 import { type Permission, roleHasPermission } from "./permissions";
 
 export class AuthorizationError extends Error {
@@ -84,6 +84,35 @@ export function assertCanReadLoad(actor: AuthenticatedActor, load: LoadAccessVie
 export function assertCanModifyLoad(actor: AuthenticatedActor, load: LoadAccessView): void {
   if (!canReadLoad(actor, load)) throw new ResourceScopeError();
   if (!canModifyLoad(actor, load)) throw new AuthorizationError();
+}
+
+/** Minimal projection of a load needed for shipment-operation access decisions. */
+export interface ShipmentAccessView extends LoadAccessView {
+  status: LoadStatus;
+}
+
+/**
+ * Operational write access (Milestone 3): the assigned carrier company, and
+ * ONLY the assigned carrier company, on a shipment that has actually reached
+ * CARRIER_ASSIGNED or later. Deliberately separate from — and never a
+ * modification of — {@link canModifyLoad}, which stays hardcoded shipper-only.
+ *
+ * `carrierCompanyId` is set at AWARDED (offer acceptance), one step before
+ * assignment; a carrier's company briefly "wins" the load before the shipper
+ * confirms assignment, and must not gain operational access during that
+ * window — CARRIER_ASSIGNED is the actual start of operational execution.
+ */
+export function canOperateShipment(actor: AuthenticatedActor, load: ShipmentAccessView): boolean {
+  if (isAdmin(actor)) return true;
+  if (actor.companyId === null) return false;
+  if (load.carrierCompanyId === null) return false;
+  if (actor.companyId !== load.carrierCompanyId) return false;
+  return load.status !== LoadStatus.AWARDED;
+}
+
+export function assertCanOperateShipment(actor: AuthenticatedActor, load: ShipmentAccessView): void {
+  if (!canReadLoad(actor, load)) throw new ResourceScopeError();
+  if (!canOperateShipment(actor, load)) throw new AuthorizationError();
 }
 
 /** A company's own record is readable/editable by its members (or staff). */

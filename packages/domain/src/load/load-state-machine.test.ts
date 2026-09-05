@@ -97,13 +97,12 @@ describe("load state machine", () => {
     expect(canCancelLoad(LoadStatus.CARRIER_ASSIGNED)).toBe(true);
   });
 
-  it("exposes only DRAFT..CARRIER_ASSIGNED + CANCELLED (no execution states yet)", () => {
-    expect([...EXPOSED_LOAD_STATUSES].sort()).toEqual(
-      ["DRAFT", "POSTED", "OFFER_RECEIVED", "AWARDED", "CARRIER_ASSIGNED", "CANCELLED"].sort(),
-    );
-    expect(isExposedLoadStatus(LoadStatus.PICKED_UP)).toBe(false);
-    expect(isExposedLoadStatus(LoadStatus.DELIVERED)).toBe(false);
-    expect(isExposedLoadStatus(LoadStatus.COMPLETED)).toBe(false);
+  it("exposes the full lifecycle, including the Milestone 3 operational statuses", () => {
+    expect([...EXPOSED_LOAD_STATUSES].sort()).toEqual([...LOAD_STATUSES].sort());
+    expect(isExposedLoadStatus(LoadStatus.PICKED_UP)).toBe(true);
+    expect(isExposedLoadStatus(LoadStatus.IN_TRANSIT)).toBe(true);
+    expect(isExposedLoadStatus(LoadStatus.DELIVERED)).toBe(true);
+    expect(isExposedLoadStatus(LoadStatus.COMPLETED)).toBe(true);
     expect(isExposedLoadStatus(LoadStatus.AWARDED)).toBe(true);
   });
 });

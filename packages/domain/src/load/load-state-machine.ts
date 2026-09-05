@@ -50,11 +50,11 @@ export const TERMINAL_LOAD_STATUSES: readonly LoadStatus[] = [
 ];
 
 /**
- * Load statuses LoadTopia exposes today: the shipper-side lifecycle (Milestone 1)
- * plus the marketplace progression (Milestone 2). `PICKED_UP … COMPLETED` are
- * defined in the map for the future but are NOT exposed — no execution/tracking
- * is built. Routes and serializers use this to gate `availableTransitions` and
- * as defence-in-depth on `transition()`.
+ * Load statuses LoadTopia exposes today: the shipper-side lifecycle (Milestone 1),
+ * the marketplace progression (Milestone 2), and the post-award operational
+ * lifecycle (Milestone 3: pickup through completion). Routes and serializers
+ * use this to gate `availableTransitions` and as defence-in-depth on
+ * `atomicLoadTransition()`.
  */
 export const EXPOSED_LOAD_STATUSES: readonly LoadStatus[] = [
   LoadStatus.DRAFT,
@@ -62,6 +62,10 @@ export const EXPOSED_LOAD_STATUSES: readonly LoadStatus[] = [
   LoadStatus.OFFER_RECEIVED,
   LoadStatus.AWARDED,
   LoadStatus.CARRIER_ASSIGNED,
+  LoadStatus.PICKED_UP,
+  LoadStatus.IN_TRANSIT,
+  LoadStatus.DELIVERED,
+  LoadStatus.COMPLETED,
   LoadStatus.CANCELLED,
 ];
 

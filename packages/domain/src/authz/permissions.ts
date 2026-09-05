@@ -48,6 +48,13 @@ export const Permission = {
   PRICING_ESTIMATE: "pricing:estimate", // both: request a pricing estimate
   MARKETPLACE_ADMIN: "marketplace:admin", // admin: eligibility overrides, overview
 
+  // Operations (Milestone 3). The first-ever LOAD_*-equivalent permission
+  // granted to carriers — everything else in CARRIER_PERMISSIONS is
+  // marketplace/offer-only by design. Scoped narrowly by canOperateShipment()
+  // to the SINGLE carrier company assigned to the shipment; never "own" in
+  // the sense LOAD_*_OWN means for a shipper.
+  SHIPMENT_OPERATE_ASSIGNED: "shipment:operate:assigned",
+
   // Platform staff
   ADMIN_PANEL: "admin:panel",
   ADMIN_USER_MANAGE: "admin:user:manage",
@@ -95,6 +102,9 @@ const CARRIER_PERMISSIONS: readonly Permission[] = [
   Permission.OFFER_MANAGE_OWN,
   Permission.OFFER_READ_OWN,
   Permission.PRICING_ESTIMATE,
+  // Operations (M3): only on a shipment this carrier is actually assigned to —
+  // enforced by canOperateShipment(), not by this permission grant alone.
+  Permission.SHIPMENT_OPERATE_ASSIGNED,
 ];
 
 export const ROLE_PERMISSIONS: Readonly<Record<UserRole, readonly Permission[]>> = {

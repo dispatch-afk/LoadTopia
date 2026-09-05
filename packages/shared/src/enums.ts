@@ -65,8 +65,52 @@ export const LoadEventType = {
   OFFER_REJECTED: "OFFER_REJECTED",
   NOTE_ADDED: "NOTE_ADDED",
   CANCELLED: "CANCELLED",
+  // --- Milestone 3 (Operations) ---
+  CHECK_IN_ADDED: "CHECK_IN_ADDED",
+  DOCUMENT_UPLOADED: "DOCUMENT_UPLOADED",
+  DOCUMENT_REVIEWED: "DOCUMENT_REVIEWED",
+  DOCUMENT_REMOVED: "DOCUMENT_REMOVED",
+  EXCEPTION_REPORTED: "EXCEPTION_REPORTED",
 } as const;
 export type LoadEventType = (typeof LoadEventType)[keyof typeof LoadEventType];
+
+// --- Milestone 3 (Operations) ----------------------------------------------
+
+/** Operational document category. The Rate Confirmation is a separate,
+ *  system-generated record (see RateConfirmationStatus) — never a row here. */
+export const DocumentType = {
+  BOL: "BOL",
+  POD: "POD",
+  OTHER: "OTHER",
+} as const;
+export type DocumentType = (typeof DocumentType)[keyof typeof DocumentType];
+
+/** Current review pointer on a `LoadDocument` (POD only — null for BOL/OTHER). */
+export const DocumentReviewStatus = {
+  PENDING_REVIEW: "PENDING_REVIEW",
+  APPROVED: "APPROVED",
+  REJECTED: "REJECTED",
+} as const;
+export type DocumentReviewStatus = (typeof DocumentReviewStatus)[keyof typeof DocumentReviewStatus];
+
+/** A single immutable review decision (`DocumentReview.decision`) — narrower
+ *  than `DocumentReviewStatus`, which also has the non-decision PENDING_REVIEW. */
+export const DocumentReviewDecision = {
+  APPROVED: "APPROVED",
+  REJECTED: "REJECTED",
+} as const;
+export type DocumentReviewDecision =
+  (typeof DocumentReviewDecision)[keyof typeof DocumentReviewDecision];
+
+/** Rate Confirmation render/storage status — never gates the commercial
+ *  snapshot's own validity, only whether the rendered artifact exists yet. */
+export const RateConfirmationStatus = {
+  PENDING: "PENDING",
+  GENERATED: "GENERATED",
+  FAILED: "FAILED",
+} as const;
+export type RateConfirmationStatus =
+  (typeof RateConfirmationStatus)[keyof typeof RateConfirmationStatus];
 
 // --- Marketplace (Milestone 2) --------------------------------------------
 

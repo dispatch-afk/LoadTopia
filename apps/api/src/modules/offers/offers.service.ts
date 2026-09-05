@@ -295,7 +295,7 @@ export class OffersService {
           actorCompanyId: carrierCompanyId,
           data: { amount: round.amount.toFixed(2), currency: round.currency },
         });
-        await markLoadOfferReceived(tx, loadId, actor.userId);
+        await markLoadOfferReceived(tx, loadId, actor.userId, actor.companyId);
         return thread.id;
       });
     } catch (err) {
@@ -498,6 +498,7 @@ export class OffersService {
         from: t.load.status as LoadStatus,
         to: LoadStatus.AWARDED,
         actorUserId: actor.userId,
+        actorCompanyId: actor.companyId,
         extra: {
           carrierCompanyId: t.carrierCompanyId,
           bookedRate: winningRound.amount,

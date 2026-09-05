@@ -15,6 +15,7 @@ export async function appendLoadEvent(
       fromStatus: draft.fromStatus,
       toStatus: draft.toStatus,
       actorUserId: draft.actorUserId,
+      actorCompanyId: draft.actorCompanyId,
       note: draft.note,
       data: (draft.data ?? undefined) as Prisma.InputJsonValue | undefined,
     },
@@ -26,6 +27,9 @@ export interface LoadTransitionParams {
   from: LoadStatus;
   to: LoadStatus;
   actorUserId: string;
+  /** Milestone 3: which company the actor was acting for (null for a
+   *  pre-Milestone-3 caller that hasn't been updated to pass it yet). */
+  actorCompanyId?: string | null;
   extra?: Prisma.LoadUncheckedUpdateManyInput;
   note?: string;
   data?: Record<string, unknown> | null;
@@ -58,6 +62,7 @@ export async function atomicLoadTransition(
     fromStatus: p.from,
     toStatus: p.to,
     actorUserId: p.actorUserId,
+    actorCompanyId: p.actorCompanyId ?? null,
     note: p.note ?? null,
     data: p.data ?? null,
   });
@@ -73,6 +78,7 @@ export async function markLoadOfferReceived(
   tx: Prisma.TransactionClient,
   loadId: string,
   actorUserId: string,
+  actorCompanyId: string | null = null,
 ): Promise<boolean> {
   const bumped = await tx.load.updateMany({
     where: { id: loadId, status: LoadStatus.POSTED },
@@ -85,6 +91,7 @@ export async function markLoadOfferReceived(
     fromStatus: LoadStatus.POSTED,
     toStatus: LoadStatus.OFFER_RECEIVED,
     actorUserId,
+    actorCompanyId,
     note: "first marketplace offer received",
     data: null,
   });

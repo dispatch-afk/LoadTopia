@@ -121,6 +121,7 @@ export class LoadsService {
         buildLoadCreatedEvent({
           loadId: load.id,
           actorUserId: actor.userId,
+          actorCompanyId: actor.companyId,
           initialStatus: LoadStatus.DRAFT,
         }),
       );
@@ -273,7 +274,12 @@ export class LoadsService {
       });
       await this.appendEvent(
         tx,
-        buildLoadUpdatedEvent({ loadId: id, actorUserId: actor.userId, changedFields }),
+        buildLoadUpdatedEvent({
+          loadId: id,
+          actorUserId: actor.userId,
+          actorCompanyId: actor.companyId,
+          changedFields,
+        }),
       );
     });
 
@@ -358,6 +364,7 @@ export class LoadsService {
         from: fresh.status,
         to: LoadStatus.POSTED,
         actorUserId: actor.userId,
+        actorCompanyId: actor.companyId,
         extra: { postedAt: new Date() },
       });
     });
@@ -406,9 +413,14 @@ export class LoadsService {
     if (!load.carrierCompanyId) {
       throw conflict("This load has no awarded carrier to assign");
     }
-    await this.transition(id, load.status, LoadStatus.CARRIER_ASSIGNED, actor.userId, {
-      assignedAt: new Date(),
-    });
+    await this.transition(
+      id,
+      load.status,
+      LoadStatus.CARRIER_ASSIGNED,
+      actor.userId,
+      actor.companyId,
+      { assignedAt: new Date() },
+    );
     return this.loadDetail(id);
   }
 
@@ -419,7 +431,14 @@ export class LoadsService {
     assertPermission(actor, Permission.LOAD_UPDATE_OWN);
 
     assertLoadTransition(load.status, LoadStatus.DRAFT);
-    await this.transition(id, load.status, LoadStatus.DRAFT, actor.userId, { postedAt: null });
+    await this.transition(
+      id,
+      load.status,
+      LoadStatus.DRAFT,
+      actor.userId,
+      actor.companyId,
+      { postedAt: null },
+    );
     return this.loadDetail(id);
   }
 
@@ -432,9 +451,15 @@ export class LoadsService {
     if (!canCancelLoad(load.status)) {
       assertLoadTransition(load.status, LoadStatus.CANCELLED); // throws a precise error
     }
-    await this.transition(id, load.status, LoadStatus.CANCELLED, actor.userId, {
-      cancelledAt: new Date(),
-    }, reason);
+    await this.transition(
+      id,
+      load.status,
+      LoadStatus.CANCELLED,
+      actor.userId,
+      actor.companyId,
+      { cancelledAt: new Date() },
+      reason,
+    );
     return this.loadDetail(id);
   }
 
@@ -444,11 +469,12 @@ export class LoadsService {
     from: LoadStatus,
     to: LoadStatus,
     actorUserId: string,
+    actorCompanyId: string | null,
     extra: Prisma.LoadUncheckedUpdateManyInput,
     note?: string,
   ): Promise<void> {
     await this.prisma.$transaction((tx) =>
-      atomicLoadTransition(tx, { id, from, to, actorUserId, extra, note }),
+      atomicLoadTransition(tx, { id, from, to, actorUserId, actorCompanyId, extra, note }),
     );
   }
 

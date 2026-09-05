@@ -1,12 +1,14 @@
-import { type AuthenticatedActor, CompanyType, UserRole } from "@loadtopia/shared";
+import { type AuthenticatedActor, CompanyType, LoadStatus, UserRole } from "@loadtopia/shared";
 import { describe, expect, it } from "vitest";
 import {
   AuthorizationError,
   ResourceScopeError,
   assertCanModifyLoad,
+  assertCanOperateShipment,
   assertCompanyScope,
   assertPermission,
   canModifyLoad,
+  canOperateShipment,
   canReadLoad,
   hasPermission,
   isSameCompany,
@@ -70,6 +72,11 @@ describe("permission checks", () => {
     expect(hasPermission(carrier, Permission.LOAD_POST)).toBe(false);
   });
 
+  it("grants carriers the Milestone 3 shipment-operation permission, and only carriers", () => {
+    expect(hasPermission(carrier, Permission.SHIPMENT_OPERATE_ASSIGNED)).toBe(true);
+    expect(hasPermission(shipper, Permission.SHIPMENT_OPERATE_ASSIGNED)).toBe(false);
+  });
+
   it("grants admin every permission", () => {
     expect(hasPermission(admin, Permission.ADMIN_PANEL)).toBe(true);
     expect(hasPermission(admin, Permission.LOAD_CREATE)).toBe(true);
@@ -118,5 +125,53 @@ describe("load resource policy", () => {
   it("lets admin read and modify any load", () => {
     expect(canReadLoad(admin, load)).toBe(true);
     expect(canModifyLoad(admin, load)).toBe(true);
+  });
+});
+
+describe("shipment operation policy (Milestone 3)", () => {
+  const assigned = { shipperCompanyId: "co-shipper", carrierCompanyId: "co-carrier" };
+  const otherCarrier: AuthenticatedActor = {
+    ...carrier,
+    userId: "u-car2",
+    companyId: "co-carrier-2",
+    membershipId: "m-car2",
+  };
+
+  it("lets the assigned carrier operate a CARRIER_ASSIGNED-or-later shipment", () => {
+    for (const status of [
+      LoadStatus.CARRIER_ASSIGNED,
+      LoadStatus.PICKED_UP,
+      LoadStatus.IN_TRANSIT,
+      LoadStatus.DELIVERED,
+      LoadStatus.COMPLETED,
+    ]) {
+      expect(canOperateShipment(carrier, { ...assigned, status })).toBe(true);
+    }
+  });
+
+  it("denies the carrier during the AWARDED window — before the shipper confirms assignment", () => {
+    expect(canOperateShipment(carrier, { ...assigned, status: LoadStatus.AWARDED })).toBe(false);
+  });
+
+  it("never lets an unassigned carrier operate — assertCanOperateShipment 404s, not 403s", () => {
+    expect(canOperateShipment(otherCarrier, { ...assigned, status: LoadStatus.CARRIER_ASSIGNED })).toBe(
+      false,
+    );
+    expect(() =>
+      assertCanOperateShipment(otherCarrier, { ...assigned, status: LoadStatus.CARRIER_ASSIGNED }),
+    ).toThrow(ResourceScopeError);
+  });
+
+  it("never lets the owning shipper operate the shipment — canModifyLoad stays the shipper's boundary", () => {
+    expect(canOperateShipment(shipper, { ...assigned, status: LoadStatus.CARRIER_ASSIGNED })).toBe(
+      false,
+    );
+    expect(() =>
+      assertCanOperateShipment(shipper, { ...assigned, status: LoadStatus.CARRIER_ASSIGNED }),
+    ).toThrow(AuthorizationError);
+  });
+
+  it("lets admin operate any shipment", () => {
+    expect(canOperateShipment(admin, { ...assigned, status: LoadStatus.PICKED_UP })).toBe(true);
   });
 });
