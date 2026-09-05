@@ -243,6 +243,15 @@ export interface MarketplaceLoadListItem {
   deliveryWindowEnd: string | null;
   miles: number | null;
   driveTimeMinutes: number | null;
+  /**
+   * Routing provenance for `miles`/`driveTimeMinutes` above — derived from
+   * the load's OWN persisted `routingProvider`, never from whichever routing
+   * provider is currently configured (mirrors `LoadView.routing`). A load
+   * routed by the mock provider keeps `isMock: true` forever, even after
+   * production cuts over to a real provider, so carriers can distinguish
+   * historical mock mileage from real routing.
+   */
+  routing: { provider: string | null; isMock: boolean };
   shipperName: string;
   postedAt: string | null;
   /** This carrier's negotiation on this load, if any. */

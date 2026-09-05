@@ -68,6 +68,12 @@ interface LoadDisplay {
   deliveryWindowStart: string | null;
   deliveryWindowEnd: string | null;
   miles: number | null;
+  /**
+   * Routing provenance for `miles` — derived from the load's own persisted
+   * `routingProvider` in both source responses (`MarketplaceLoadView.routing`
+   * and `LoadView.routing`), never from the currently configured provider.
+   */
+  routing: { provider: string | null; isMock: boolean };
   /** Present only on-market (from the marketplace endpoint). */
   market: { shipperName: string; eligible: boolean; reasons: string[] } | null;
   /** Present only off-market (from GET /api/loads/:id → the awarded carrier). */
@@ -90,6 +96,7 @@ function fromMarketplace(m: MarketplaceLoadView): LoadDisplay {
     deliveryWindowStart: m.deliveryWindowStart,
     deliveryWindowEnd: m.deliveryWindowEnd,
     miles: m.miles,
+    routing: m.routing,
     market: {
       shipperName: m.shipperName,
       eligible: m.eligibility.eligible,
@@ -115,6 +122,7 @@ function fromLoadView(l: LoadView): LoadDisplay {
     deliveryWindowStart: l.deliveryWindowStart,
     deliveryWindowEnd: l.deliveryWindowEnd,
     miles: l.routing.miles,
+    routing: { provider: l.routing.provider, isMock: l.routing.isMock },
     market: null,
     award: l.marketplace.award,
   };
@@ -187,7 +195,19 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
                 label="Delivery"
                 value={fmtWindow(load.deliveryWindowStart, load.deliveryWindowEnd)}
               />
-              <Detail label="Distance" value={fmtMiles(load.miles)} />
+              <Detail
+                label="Distance"
+                value={
+                  <>
+                    {fmtMiles(load.miles)}
+                    {load.routing.isMock && (
+                      <span className="mt-0.5 block text-xs text-muted">
+                        MOCK development data, not real-world routing
+                      </span>
+                    )}
+                  </>
+                }
+              />
             </dl>
           </Card>
 

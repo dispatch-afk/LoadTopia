@@ -13,7 +13,7 @@ import {
   Permission,
   type LoadEventDraft,
 } from "@loadtopia/domain";
-import type { ProviderRegistry } from "@loadtopia/providers";
+import { MOCK_PROVIDER_NAME, type ProviderRegistry } from "@loadtopia/providers";
 import {
   type AuthenticatedActor,
   type CreateLoadInput,
@@ -229,6 +229,19 @@ export class LoadsService {
     const changedFields = Object.keys(input);
 
     await this.prisma.$transaction(async (tx) => {
+      // Row lock + a fresh status re-check: the load was read (and computeRouting
+      // — network I/O — was run) BEFORE this transaction opened. If a concurrent
+      // post() committed DRAFT -> POSTED in the meantime, this stale write must
+      // never land on the now-POSTED load. Locking first means we either wait
+      // behind post()'s own lock (see below) and then see the fresh status here,
+      // or we win the race and post() waits behind us instead — either way only
+      // one of the two can succeed against the load as it actually is.
+      await tx.$executeRaw`SELECT 1 FROM loads WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.load.findUniqueOrThrow({ where: { id }, select: { status: true } });
+      if (current.status !== LoadStatus.DRAFT) {
+        throw conflict("Only a DRAFT load can be edited. Withdraw the load to DRAFT first.");
+      }
+
       await tx.load.update({
         where: { id },
         data: {
@@ -293,33 +306,60 @@ export class LoadsService {
     assertCanModifyLoad(actor, load);
     assertPermission(actor, Permission.LOAD_POST);
 
-    assertLoadTransition(load.status, LoadStatus.POSTED);
-    assertPostReadiness({
-      status: load.status,
-      originLocationId: load.originLocationId,
-      destinationLocationId: load.destinationLocationId,
-      equipmentType: load.equipmentType,
-      commodity: load.commodity,
-      weightLbs: load.weightLbs,
-      pickupWindowStart: load.pickupWindowStart,
-      pickupWindowEnd: load.pickupWindowEnd,
-      deliveryWindowStart: load.deliveryWindowStart,
-      deliveryWindowEnd: load.deliveryWindowEnd,
-    });
+    const routingIsMock = this.providers.routing.isMock;
 
-    // Under a REAL routing provider, a load with no computed distance means
-    // routing genuinely failed (Google outage/quota/bad coordinates) — never
-    // let that reach the marketplace, where MockPricingProvider would fall
-    // back to a fully synthetic lane distance as if the route had succeeded.
-    // Mock routing never fails, so this can't block local/CI/test posting.
-    if (!this.providers.routing.isMock && load.distanceMeters == null) {
-      throw conflict(
-        "Route mileage could not be calculated. Verify the origin and destination and retry routing before posting.",
-      );
-    }
+    await this.prisma.$transaction(async (tx) => {
+      // Row lock FIRST, then re-read the authoritative state: everything this
+      // guard depends on (status, post-readiness fields, routing provenance)
+      // is validated against the load AS IT ACTUALLY IS at commit time, not a
+      // stale pre-transaction read. A concurrent update() attempting to
+      // mutate the same row (e.g. swapping in a still-unrouted location) is
+      // forced to serialize against this lock — see loads.service.ts#update().
+      await tx.$executeRaw`SELECT 1 FROM loads WHERE id = ${id}::uuid FOR UPDATE`;
+      const fresh = await tx.load.findUniqueOrThrow({ where: { id } });
 
-    await this.transition(id, load.status, LoadStatus.POSTED, actor.userId, {
-      postedAt: new Date(),
+      assertLoadTransition(fresh.status, LoadStatus.POSTED);
+      assertPostReadiness({
+        status: fresh.status,
+        originLocationId: fresh.originLocationId,
+        destinationLocationId: fresh.destinationLocationId,
+        equipmentType: fresh.equipmentType,
+        commodity: fresh.commodity,
+        weightLbs: fresh.weightLbs,
+        pickupWindowStart: fresh.pickupWindowStart,
+        pickupWindowEnd: fresh.pickupWindowEnd,
+        deliveryWindowStart: fresh.deliveryWindowStart,
+        deliveryWindowEnd: fresh.deliveryWindowEnd,
+      });
+
+      // Production routing invariant: under a REAL (non-mock) routing
+      // provider, POSTED marketplace freight must carry a genuine, non-mock
+      // route. `routingProvider` — not just `distanceMeters` — must be
+      // present and must not be the mock marker, so a historical load whose
+      // persisted route came from MockRoutingProvider can never reach the
+      // marketplace once production has cut over to a real provider. This is
+      // provider-neutral (checks "not mock", never a specific provider name)
+      // so a future second real provider needs no change here. Mock routing
+      // never fails and is never the mock marker under itself, so this can't
+      // block local/CI/test posting.
+      if (
+        !routingIsMock &&
+        (fresh.distanceMeters == null ||
+          fresh.routingProvider == null ||
+          fresh.routingProvider === MOCK_PROVIDER_NAME)
+      ) {
+        throw conflict(
+          "Route mileage could not be calculated. Verify the origin and destination and retry routing before posting.",
+        );
+      }
+
+      await atomicLoadTransition(tx, {
+        id,
+        from: fresh.status,
+        to: LoadStatus.POSTED,
+        actorUserId: actor.userId,
+        extra: { postedAt: new Date() },
+      });
     });
 
     // Capture an immutable pricing snapshot at post time so the price the
