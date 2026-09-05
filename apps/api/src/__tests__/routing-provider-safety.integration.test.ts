@@ -1,5 +1,11 @@
 import type { PrismaClient } from "@loadtopia/db";
-import type { ProviderHealth, RouteRequest, RouteResult, RoutingProvider } from "@loadtopia/providers";
+import type {
+  GeocodingProvider,
+  ProviderHealth,
+  RouteRequest,
+  RouteResult,
+  RoutingProvider,
+} from "@loadtopia/providers";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { allMockProviders } from "./helpers";
@@ -26,9 +32,11 @@ const suite = TEST_DB_URL ? describe : describe.skip;
 class FakeRealRoutingProvider implements RoutingProvider {
   readonly name = "google";
   readonly isMock = false;
+  callCount = 0;
   constructor(private readonly behavior: "succeed" | "fail" = "succeed") {}
 
   async getRoute(_req: RouteRequest): Promise<RouteResult> {
+    this.callCount += 1;
     if (this.behavior === "fail") throw new Error("simulated real-provider routing failure");
     return {
       distanceMeters: 4_264_000, // ~2,650 mi, a realistic VA -> CA road distance
@@ -42,6 +50,27 @@ class FakeRealRoutingProvider implements RoutingProvider {
   async health(): Promise<ProviderHealth> {
     return { status: "ok", isMock: false };
   }
+}
+
+/**
+ * A minimal stand-in for GoogleGeocodingProvider that always resolves — used
+ * wherever a test needs a Location that is genuinely (not mock-) geocoded, so
+ * it can exercise "real routing succeeds" without also exercising the
+ * mock-coordinate provenance guard (see routing.ts's computeRouting()).
+ */
+function googleGeocoding(): GeocodingProvider {
+  return {
+    name: "google",
+    isMock: false,
+    geocode: async (address) => ({
+      point: { latitude: 38.6558, longitude: -77.2517 },
+      normalizedAddress: { ...address, country: address.country || "US" },
+      provider: "google",
+      isMock: false,
+      retrievedAt: new Date().toISOString(),
+    }),
+    health: async () => ({ status: "ok", isMock: false }),
+  };
 }
 
 const future = (days: number, hour = 8) => {
@@ -118,6 +147,11 @@ suite("routing provider provenance + posting safety (integration)", () => {
       const googleApi = await makeAppWithProviders(prisma, {
         ...allMockProviders(),
         routing: new FakeRealRoutingProvider("succeed"),
+        // Locations must be genuinely geocoded by a real provider here — the
+        // coordinate-provenance guard in routing.ts correctly refuses to route
+        // mock-geocoded coordinates under a real routing provider (see the
+        // dedicated "coordinate provenance guard" describe block below).
+        geocoding: googleGeocoding(),
       });
       const s = await shipperWithLocations(googleApi);
       const created = await googleApi.inject(
@@ -190,6 +224,7 @@ suite("routing provider provenance + posting safety (integration)", () => {
       const okApi = await makeAppWithProviders(prisma, {
         ...allMockProviders(),
         routing: new FakeRealRoutingProvider("succeed"),
+        geocoding: googleGeocoding(), // genuinely geocoded — the guard must not block this
       });
       const s = await shipperWithLocations(okApi);
       const created = await okApi.inject(
@@ -219,11 +254,105 @@ suite("routing provider provenance + posting safety (integration)", () => {
     });
   });
 
+  describe("coordinate provenance guard: mock-geocoded Location + real routing provider", () => {
+    it("a Location geocoded by mock, used under a real routing provider: draft succeeds, routing provider is never called, distanceMeters stays null, and posting is blocked by the existing guard", async () => {
+      const fakeRouting = new FakeRealRoutingProvider("succeed");
+      const api = await makeAppWithProviders(prisma, {
+        ...allMockProviders(), // GEOCODING_PROVIDER stays mock, same as production pre-cutover
+        routing: fakeRouting, // ROUTING_PROVIDER is now the real (isMock: false) adapter
+      });
+      const s = await registerCompany(api, { companyName: "Provenance Guard Co" });
+      // createLocation() geocodes through this app's (mock) GeocodingProvider,
+      // producing exactly the pre-cutover state under test: geocoded_by = "mock".
+      const origin = await createLocation(api, s.cookie, { name: "Origin", city: "Woodbridge", state: "VA" });
+      const dest = await createLocation(api, s.cookie, { name: "Dest", city: "Beverly Hills", state: "CA" });
+      const originRow = await prisma.location.findUniqueOrThrow({ where: { id: origin } });
+      expect(originRow.geocodedBy).toBe("mock");
+      expect(originRow.latitude).not.toBeNull(); // geocoded, just by mock
+
+      const created = await api.inject(
+        authed(s.cookie, { method: "POST", url: "/api/loads", payload: draftPayload(origin, dest) }),
+      );
+      expect(created.statusCode).toBe(201);
+      expect(created.json().status).toBe("DRAFT");
+      expect(created.json().routing.miles).toBeNull();
+      expect(created.json().routing.provider).toBeNull();
+      expect(created.json().routing.isMock).toBe(false); // never-routed, per the isMock derivation rule
+      expect(fakeRouting.callCount).toBe(0); // the real provider was NEVER asked to route these coordinates
+      const id = created.json().id;
+
+      const row = await prisma.load.findUniqueOrThrow({ where: { id } });
+      expect(row.distanceMeters).toBeNull();
+      expect(row.driveTimeMinutes).toBeNull();
+      expect(row.routingProvider).toBeNull();
+
+      // The EXISTING (unmodified) posting-safety guard — not new logic — blocks
+      // posting because distanceMeters is still null under a real provider.
+      const post = await api.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${id}/post` }));
+      expect(post.statusCode).toBe(409);
+      expect(post.json().error.message).toMatch(/Route mileage could not be calculated/);
+
+      const snapshots = await prisma.pricingSnapshot.count({ where: { loadId: id } });
+      expect(snapshots).toBe(0);
+      await api.close();
+    });
+
+    it("a Location genuinely geocoded by the real provider routes normally under that same provider", async () => {
+      const fakeRouting = new FakeRealRoutingProvider("succeed");
+      const api = await makeAppWithProviders(prisma, {
+        ...allMockProviders(),
+        routing: fakeRouting,
+        geocoding: googleGeocoding(),
+      });
+      const s = await registerCompany(api, { companyName: "Real Geocode Co" });
+      const origin = await createLocation(api, s.cookie, { name: "Origin", city: "Woodbridge", state: "VA" });
+      const dest = await createLocation(api, s.cookie, { name: "Dest", city: "Beverly Hills", state: "CA" });
+      const originRow = await prisma.location.findUniqueOrThrow({ where: { id: origin } });
+      expect(originRow.geocodedBy).toBe("google");
+
+      const created = await api.inject(
+        authed(s.cookie, { method: "POST", url: "/api/loads", payload: draftPayload(origin, dest) }),
+      );
+      expect(created.statusCode).toBe(201);
+      expect(created.json().routing.provider).toBe("google");
+      expect(created.json().routing.isMock).toBe(false);
+      expect(created.json().routing.miles).toBeGreaterThan(0);
+      expect(fakeRouting.callCount).toBe(1); // the guard did not block a legitimate real-provider Location
+      await api.close();
+    });
+
+    it("switching providers and merely READING an existing load never reroutes it (no automatic rerouting on cutover)", async () => {
+      const mockApi = await makeAppWithProviders(prisma, allMockProviders());
+      const s = await shipperWithLocations(mockApi);
+      const created = await mockApi.inject(
+        authed(s.cookie, { method: "POST", url: "/api/loads", payload: draftPayload(s.origin, s.dest) }),
+      );
+      const id = created.json().id;
+      const before = await prisma.load.findUniqueOrThrow({ where: { id } });
+      await mockApi.close();
+
+      const fakeRouting = new FakeRealRoutingProvider("succeed");
+      const googleApi = await makeAppWithProviders(prisma, { ...allMockProviders(), routing: fakeRouting });
+      const read = await googleApi.inject(authed(s.cookie, { method: "GET", url: `/api/loads/${id}` }));
+      expect(read.statusCode).toBe(200);
+      expect(fakeRouting.callCount).toBe(0); // reading never triggers a re-route
+
+      const after = await prisma.load.findUniqueOrThrow({ where: { id } });
+      expect(after.distanceMeters).toEqual(before.distanceMeters);
+      expect(after.driveTimeMinutes).toEqual(before.driveTimeMinutes);
+      expect(after.routingProvider).toBe(before.routingProvider);
+      expect(after.routedAt).toEqual(before.routedAt);
+      expect(read.json().routing.isMock).toBe(true); // historical provenance intact
+      await googleApi.close();
+    });
+  });
+
   describe("pricing interaction (no PricingProvider change)", () => {
     it("the persisted real route distance reaches MockPricingProvider at post time", async () => {
       const okApi = await makeAppWithProviders(prisma, {
         ...allMockProviders(),
         routing: new FakeRealRoutingProvider("succeed"),
+        geocoding: googleGeocoding(), // genuinely geocoded — the guard must not block this
       });
       const s = await shipperWithLocations(okApi);
       const created = await okApi.inject(
