@@ -252,6 +252,228 @@ suite("routing provider provenance + posting safety (integration)", () => {
       expect(post.statusCode).toBe(200);
       await mockApi.close();
     });
+
+    // The core regression test: a load whose PERSISTED routingProvider is
+    // literally "mock" (created before a production cutover, or under any
+    // mock-configured environment) must never reach POSTED once the active
+    // registry is a real (isMock: false) provider — even though it already has
+    // a non-null distanceMeters. Checking distanceMeters alone (the pre-hotfix
+    // guard) would have let this through.
+    it("a load with a persisted MOCK routingProvider and a non-null distance is blocked from posting under a real provider", async () => {
+      const mockApi = await makeAppWithProviders(prisma, allMockProviders());
+      const s = await shipperWithLocations(mockApi);
+      const created = await mockApi.inject(
+        authed(s.cookie, { method: "POST", url: "/api/loads", payload: draftPayload(s.origin, s.dest) }),
+      );
+      const id = created.json().id;
+      await mockApi.close();
+
+      const row = await prisma.load.findUniqueOrThrow({ where: { id } });
+      expect(row.routingProvider).toBe("mock");
+      expect(row.distanceMeters).not.toBeNull(); // exactly the state the old distance-only guard would have allowed through
+
+      // Production cutover: a fresh app instance, now configured with a real
+      // routing provider, against the SAME database row.
+      const googleApi = await makeAppWithProviders(prisma, {
+        ...allMockProviders(),
+        routing: new FakeRealRoutingProvider("succeed"),
+      });
+      const post = await googleApi.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${id}/post` }));
+      expect(post.statusCode).toBe(409);
+      expect(post.json().error.message).toMatch(/Route mileage could not be calculated/);
+
+      const after = await prisma.load.findUniqueOrThrow({ where: { id } });
+      expect(after.status).toBe("DRAFT"); // never transitioned
+      const snapshots = await prisma.pricingSnapshot.count({ where: { loadId: id } });
+      expect(snapshots).toBe(0);
+      await googleApi.close();
+    });
+
+    // Defensive: routingProvider null with a non-null distance is not reachable
+    // through normal application flow (computeRouting() always sets both
+    // together, or neither — see routing.ts), but the guard checks it
+    // independently, so it is exercised directly against the database.
+    it("a load with routingProvider null but a non-null distance (defensive/unreachable state) is still blocked under a real provider", async () => {
+      const failingApi = await makeAppWithProviders(prisma, {
+        ...allMockProviders(),
+        routing: new FakeRealRoutingProvider("fail"), // creates the DRAFT with both fields null
+      });
+      const s = await shipperWithLocations(failingApi);
+      const created = await failingApi.inject(
+        authed(s.cookie, { method: "POST", url: "/api/loads", payload: draftPayload(s.origin, s.dest) }),
+      );
+      const id = created.json().id;
+      await failingApi.close();
+
+      // Force the otherwise-unreachable combination directly.
+      await prisma.load.update({
+        where: { id },
+        data: { distanceMeters: 1_000_000, driveTimeMinutes: 600 },
+      });
+
+      const googleApi = await makeAppWithProviders(prisma, {
+        ...allMockProviders(),
+        routing: new FakeRealRoutingProvider("succeed"),
+      });
+      const post = await googleApi.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${id}/post` }));
+      expect(post.statusCode).toBe(409);
+      expect(post.json().error.message).toMatch(/Route mileage could not be calculated/);
+      await googleApi.close();
+    });
+  });
+
+  describe("grandfathered historical loads (non-retroactive)", () => {
+    it("a load POSTED under mock routing before cutover remains readable, with provenance intact, after the registry switches to a real provider", async () => {
+      const mockApi = await makeAppWithProviders(prisma, allMockProviders());
+      const s = await shipperWithLocations(mockApi);
+      const created = await mockApi.inject(
+        authed(s.cookie, { method: "POST", url: "/api/loads", payload: draftPayload(s.origin, s.dest) }),
+      );
+      const id = created.json().id;
+      const post = await mockApi.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${id}/post` }));
+      expect(post.statusCode).toBe(200);
+      await mockApi.close();
+
+      const googleApi = await makeAppWithProviders(prisma, {
+        ...allMockProviders(),
+        routing: new FakeRealRoutingProvider("succeed"),
+      });
+      const read = await googleApi.inject(authed(s.cookie, { method: "GET", url: `/api/loads/${id}` }));
+      expect(read.statusCode).toBe(200);
+      expect(read.json().status).toBe("POSTED");
+      expect(read.json().routing.provider).toBe("mock");
+      expect(read.json().routing.isMock).toBe(true); // never silently relabeled
+      await googleApi.close();
+    });
+
+    it("a grandfathered mock-routed POSTED load still completes the full offer/award/assign lifecycle under a real provider (proves the new guard is non-retroactive)", async () => {
+      const mockApi = await makeAppWithProviders(prisma, allMockProviders());
+      const s = await shipperWithLocations(mockApi);
+      const created = await mockApi.inject(
+        authed(s.cookie, { method: "POST", url: "/api/loads", payload: draftPayload(s.origin, s.dest) }),
+      );
+      const id = created.json().id;
+      const posted = await mockApi.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${id}/post` }));
+      expect(posted.statusCode).toBe(200);
+      await mockApi.close();
+
+      const googleApi = await makeAppWithProviders(prisma, {
+        ...allMockProviders(),
+        routing: new FakeRealRoutingProvider("succeed"),
+      });
+      const c = await registerCompany(googleApi, { type: "CARRIER", companyName: "Grandfather Carrier" });
+      const profile = await googleApi.inject(
+        authed(c.cookie, {
+          method: "PUT",
+          url: "/api/carrier/profile",
+          payload: { legalName: "Grandfather Carrier LLC", equipmentTypes: [], serviceAreaStates: [] },
+        }),
+      );
+      expect(profile.statusCode).toBe(200);
+      await prisma.carrierProfile.update({
+        where: { companyId: c.companyId },
+        data: { marketplaceEligibility: "ELIGIBLE", verificationStatus: "VERIFIED" },
+      });
+
+      const board = await googleApi.inject(authed(c.cookie, { method: "GET", url: "/api/marketplace/loads" }));
+      expect(board.json().data.map((l: { id: string }) => l.id)).toContain(id);
+      expect(board.json().data.find((l: { id: string }) => l.id === id).routing.isMock).toBe(true);
+
+      const offer = await googleApi.inject(
+        authed(c.cookie, {
+          method: "POST",
+          url: `/api/marketplace/loads/${id}/offers`,
+          payload: { amount: "1800.00", currency: "USD" },
+        }),
+      );
+      expect(offer.statusCode).toBe(201);
+
+      const accept = await googleApi.inject(
+        authed(s.cookie, { method: "POST", url: `/api/offers/rounds/${offer.json().rounds[0].id}/accept` }),
+      );
+      expect(accept.statusCode).toBe(200);
+
+      const assign = await googleApi.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${id}/assign` }));
+      expect(assign.statusCode).toBe(200);
+      expect(assign.json().status).toBe("CARRIER_ASSIGNED");
+      expect(assign.json().routing.isMock).toBe(true); // still historically mock, never rewritten
+      await googleApi.close();
+    });
+  });
+
+  describe("post/update concurrency (row-lock hardening)", () => {
+    it("an in-flight update() that recomputes routing cannot silently overwrite a load a concurrent post() has already POSTED", async () => {
+      // A routing provider whose getRoute() blocks on a test-controlled gate —
+      // deterministic, no sleep/timing: the update() request is guaranteed to
+      // be suspended exactly at its (pre-transaction) computeRouting() await,
+      // which is the precise window the TOCTOU race requires.
+      let releaseGate: (() => void) | undefined;
+      let gate: Promise<void> | null = null;
+      const base = new FakeRealRoutingProvider("succeed");
+      const gatedRouting: RoutingProvider = {
+        name: base.name,
+        isMock: base.isMock,
+        health: () => base.health(),
+        async getRoute(req) {
+          if (gate) await gate;
+          return base.getRoute(req);
+        },
+      };
+
+      const api = await makeAppWithProviders(prisma, {
+        ...allMockProviders(),
+        routing: gatedRouting,
+        geocoding: googleGeocoding(),
+      });
+      const s = await registerCompany(api, { companyName: "Race Co" });
+      const origin = await createLocation(api, s.cookie, { name: "Origin", city: "Woodbridge", state: "VA" });
+      const dest1 = await createLocation(api, s.cookie, { name: "Dest1", city: "Beverly Hills", state: "CA" });
+      const dest2 = await createLocation(api, s.cookie, { name: "Dest2", city: "Sacramento", state: "CA" });
+
+      // Created with the gate open (not armed) — routes normally, ready to post.
+      const created = await api.inject(
+        authed(s.cookie, { method: "POST", url: "/api/loads", payload: draftPayload(origin, dest1) }),
+      );
+      const id = created.json().id;
+      expect(created.json().routing.miles).toBeGreaterThan(0);
+      const beforeRace = await prisma.load.findUniqueOrThrow({ where: { id } });
+
+      // Arm the gate, then fire an update() that changes the destination —
+      // routeInputsChanged triggers a NEW computeRouting() call, which now
+      // suspends on the gate before update() ever opens its transaction.
+      gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+      const updatePromise = api.inject(
+        authed(s.cookie, {
+          method: "PATCH",
+          url: `/api/loads/${id}`,
+          payload: { destinationLocationId: dest2 },
+        }),
+      );
+
+      // While update() is suspended, post() runs to completion — it never
+      // calls computeRouting, so it isn't gated, and it wins the race to
+      // POSTED first.
+      const post = await api.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${id}/post` }));
+      expect(post.statusCode).toBe(200);
+      expect(post.json().status).toBe("POSTED");
+
+      // Now release the gate: update()'s computeRouting resolves, and it
+      // proceeds to its row-locked, freshly-re-read status check — which must
+      // now see POSTED (not the DRAFT it originally read) and reject.
+      releaseGate!();
+      const update = await updatePromise;
+      expect(update.statusCode).toBe(409);
+      expect(update.json().error.message).toMatch(/Only a DRAFT load can be edited/);
+
+      // The load is exactly as post() left it — update()'s recomputed routing
+      // for dest2, and its destination change, never landed.
+      const after = await prisma.load.findUniqueOrThrow({ where: { id } });
+      expect(after.status).toBe("POSTED");
+      expect(after.destinationLocationId).toBe(dest1);
+      expect(after.distanceMeters).toEqual(beforeRace.distanceMeters);
+      expect(after.routedAt).toEqual(beforeRace.routedAt);
+      await api.close();
+    });
   });
 
   describe("coordinate provenance guard: mock-geocoded Location + real routing provider", () => {
@@ -375,6 +597,74 @@ suite("routing provider provenance + posting safety (integration)", () => {
       const miles = 4_264_000 / 1609.344;
       expect(Number(snapshot.midRate)).toBeGreaterThanOrEqual(miles * 1.6 * 0.99);
       expect(Number(snapshot.midRate)).toBeLessThanOrEqual(miles * 3.4 * 1.01);
+      await okApi.close();
+    });
+  });
+
+  describe("marketplace serialization: routing provenance on board/detail", () => {
+    async function eligibleCarrier(api: FastifyInstance) {
+      const c = await registerCompany(api, { type: "CARRIER", companyName: "Provenance Carrier" });
+      await api.inject(
+        authed(c.cookie, {
+          method: "PUT",
+          url: "/api/carrier/profile",
+          payload: { legalName: "Provenance Carrier LLC", equipmentTypes: [], serviceAreaStates: [] },
+        }),
+      );
+      await prisma.carrierProfile.update({
+        where: { companyId: c.companyId },
+        data: { marketplaceEligibility: "ELIGIBLE", verificationStatus: "VERIFIED" },
+      });
+      return c;
+    }
+
+    it("a mock-routed POSTED load shows routing.isMock=true on both the board and the detail endpoint; mileage is unchanged", async () => {
+      const mockApi = await makeAppWithProviders(prisma, allMockProviders());
+      const s = await shipperWithLocations(mockApi);
+      const created = await mockApi.inject(
+        authed(s.cookie, { method: "POST", url: "/api/loads", payload: draftPayload(s.origin, s.dest) }),
+      );
+      const id = created.json().id;
+      const expectedMiles = created.json().routing.miles;
+      const post = await mockApi.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${id}/post` }));
+      expect(post.statusCode).toBe(200);
+      const c = await eligibleCarrier(mockApi);
+
+      const board = await mockApi.inject(authed(c.cookie, { method: "GET", url: "/api/marketplace/loads" }));
+      const item = board.json().data.find((l: { id: string }) => l.id === id);
+      expect(item.routing).toEqual({ provider: "mock", isMock: true });
+      expect(item.miles).toBe(expectedMiles);
+
+      const detail = await mockApi.inject(authed(c.cookie, { method: "GET", url: `/api/marketplace/loads/${id}` }));
+      expect(detail.json().routing).toEqual({ provider: "mock", isMock: true });
+      expect(detail.json().miles).toBe(expectedMiles);
+      await mockApi.close();
+    });
+
+    it("a real-routed POSTED load shows routing.isMock=false on both the board and the detail endpoint; mileage is unchanged", async () => {
+      const okApi = await makeAppWithProviders(prisma, {
+        ...allMockProviders(),
+        routing: new FakeRealRoutingProvider("succeed"),
+        geocoding: googleGeocoding(),
+      });
+      const s = await shipperWithLocations(okApi);
+      const created = await okApi.inject(
+        authed(s.cookie, { method: "POST", url: "/api/loads", payload: draftPayload(s.origin, s.dest) }),
+      );
+      const id = created.json().id;
+      const expectedMiles = created.json().routing.miles;
+      const post = await okApi.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${id}/post` }));
+      expect(post.statusCode).toBe(200);
+      const c = await eligibleCarrier(okApi);
+
+      const board = await okApi.inject(authed(c.cookie, { method: "GET", url: "/api/marketplace/loads" }));
+      const item = board.json().data.find((l: { id: string }) => l.id === id);
+      expect(item.routing).toEqual({ provider: "google", isMock: false });
+      expect(item.miles).toBe(expectedMiles);
+
+      const detail = await okApi.inject(authed(c.cookie, { method: "GET", url: `/api/marketplace/loads/${id}` }));
+      expect(detail.json().routing).toEqual({ provider: "google", isMock: false });
+      expect(detail.json().miles).toBe(expectedMiles);
       await okApi.close();
     });
   });

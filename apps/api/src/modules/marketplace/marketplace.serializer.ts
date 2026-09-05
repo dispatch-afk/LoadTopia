@@ -1,4 +1,5 @@
 import type { Prisma } from "@loadtopia/db";
+import { MOCK_PROVIDER_NAME } from "@loadtopia/providers";
 import type { MarketplaceLoadListItem, OfferThreadSummary } from "@loadtopia/shared";
 import { metersToMiles } from "../loads/loads.serializer";
 
@@ -32,6 +33,9 @@ export function toMarketplaceListItem(
     deliveryWindowEnd: l.deliveryWindowEnd?.toISOString() ?? null,
     miles: metersToMiles(l.distanceMeters),
     driveTimeMinutes: l.driveTimeMinutes,
+    // Derived from the PROVIDER NAME STORED ON THIS LOAD, never the currently
+    // configured provider — mirrors loads.serializer.ts's toLoadView() exactly.
+    routing: { provider: l.routingProvider, isMock: l.routingProvider === MOCK_PROVIDER_NAME },
     shipperName: l.shipperCompany.name,
     postedAt: l.postedAt?.toISOString() ?? null,
     myThread,

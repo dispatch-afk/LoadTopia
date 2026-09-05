@@ -106,7 +106,14 @@ export default async function MarketplacePage({
                     </td>
                     <td className="whitespace-nowrap px-4 py-3">{titleCase(l.equipmentType)}</td>
                     <td className="whitespace-nowrap px-4 py-3">{fmtWeight(l.weightLbs)}</td>
-                    <td className="whitespace-nowrap px-4 py-3">{fmtMiles(l.miles)}</td>
+                    <td className="px-4 py-3">
+                      <div className="whitespace-nowrap">{fmtMiles(l.miles)}</div>
+                      {l.routing.isMock && (
+                        <div className="text-xs text-muted">
+                          MOCK development data, not real-world routing
+                        </div>
+                      )}
+                    </td>
                     <td className="whitespace-nowrap px-4 py-3 text-muted">{l.shipperName}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-muted">{fmtDate(l.postedAt)}</td>
                     <td className="whitespace-nowrap px-4 py-3">
