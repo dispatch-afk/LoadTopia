@@ -98,6 +98,9 @@ export function toLoadView(l: LoadDetailRow): LoadView {
     updatedByUserId: l.updatedByUserId,
     postedAt: l.postedAt?.toISOString() ?? null,
     cancelledAt: l.cancelledAt?.toISOString() ?? null,
+    pickedUpAt: l.pickedUpAt?.toISOString() ?? null,
+    deliveredAt: l.deliveredAt?.toISOString() ?? null,
+    completedAt: l.completedAt?.toISOString() ?? null,
     marketplace: {
       onMarket: isLoadOnMarket(l.status),
       activeOfferCount: l.offerThreads.length,

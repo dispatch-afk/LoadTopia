@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from "@loadtopia/db";
 import {
   assertCanModifyLoad,
+  assertCanOperateShipment,
   assertCanReadLoad,
   assertLoadTransition,
   assertPermission,
@@ -421,6 +422,96 @@ export class LoadsService {
       actor.companyId,
       { assignedAt: new Date() },
     );
+    return this.loadDetail(id);
+  }
+
+  // -- Milestone 3: carrier operational lifecycle ----------------------
+  //
+  // The assigned carrier reports the physical movement of the freight:
+  //   CARRIER_ASSIGNED → PICKED_UP → IN_TRANSIT → DELIVERED
+  //
+  // These are the FIRST load transitions a carrier is ever allowed to drive.
+  // Authority is `canOperateShipment()` (the assigned carrier company, or admin)
+  // — deliberately NOT `canModifyLoad()`, which stays shipper-only and untouched.
+  // DELIVERED → COMPLETED is shipper-owned and intentionally not exposed here;
+  // it gates on approved-POD readiness, which lands in a later slice.
+
+  /** `CARRIER_ASSIGNED → PICKED_UP`. Assigned carrier only. Sets `pickedUpAt`. */
+  async pickup(actor: AuthenticatedActor, id: string): Promise<LoadView> {
+    return this.operationalTransition(actor, id, LoadStatus.PICKED_UP, {
+      pickedUpAt: true,
+    });
+  }
+
+  /** `PICKED_UP → IN_TRANSIT`. Assigned carrier only. No timestamp column;
+   *  `pickedUpAt` is never rewritten. */
+  async startTransit(actor: AuthenticatedActor, id: string): Promise<LoadView> {
+    return this.operationalTransition(actor, id, LoadStatus.IN_TRANSIT, {});
+  }
+
+  /** `IN_TRANSIT → DELIVERED`. Assigned carrier only. Sets `deliveredAt`.
+   *  Physical delivery is reported independently of any POD paperwork. */
+  async deliver(actor: AuthenticatedActor, id: string): Promise<LoadView> {
+    return this.operationalTransition(actor, id, LoadStatus.DELIVERED, {
+      deliveredAt: true,
+    });
+  }
+
+  /**
+   * Shared carrier-operational transition. Server-authoritative end to end:
+   * fresh-read → authorize against THIS load → row lock → re-read status under
+   * the lock → validate the exact transition → compare-and-set + immutable
+   * event, all in one transaction with a single authoritative `now`.
+   *
+   * Never reroutes, reprices, creates a pricing snapshot, or touches the Rate
+   * Confirmation — a transition only advances `status` and its own timestamp.
+   */
+  private async operationalTransition(
+    actor: AuthenticatedActor,
+    id: string,
+    to: LoadStatus,
+    stamp: { pickedUpAt?: true; deliveredAt?: true },
+  ): Promise<LoadView> {
+    const load = await this.prisma.load.findUnique({
+      where: { id },
+      select: { shipperCompanyId: true, carrierCompanyId: true, status: true },
+    });
+    if (!load) throw notFound("Load not found");
+    // 404 for anyone who cannot even read the load (unassigned/losing/cross-company
+    // carriers); 403 for a reader who is not the assigned carrier (e.g. the shipper).
+    assertCanOperateShipment(actor, load);
+    assertPermission(actor, Permission.SHIPMENT_OPERATE_ASSIGNED);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT 1 FROM loads WHERE id = ${id}::uuid FOR UPDATE`;
+      const fresh = await tx.load.findUniqueOrThrow({
+        where: { id },
+        select: { status: true, carrierCompanyId: true },
+      });
+      // Re-authorize against the load AS IT ACTUALLY IS under the lock — a
+      // concurrent cancellation (or any status move) is rejected here or by the
+      // compare-and-set below, never silently applied to a stale view.
+      assertCanOperateShipment(actor, {
+        shipperCompanyId: load.shipperCompanyId,
+        carrierCompanyId: fresh.carrierCompanyId,
+        status: fresh.status,
+      });
+
+      const now = new Date();
+      await atomicLoadTransition(tx, {
+        id,
+        from: fresh.status,
+        to,
+        actorUserId: actor.userId,
+        actorCompanyId: actor.companyId,
+        extra: {
+          ...(stamp.pickedUpAt ? { pickedUpAt: now } : {}),
+          ...(stamp.deliveredAt ? { deliveredAt: now } : {}),
+        },
+        note: `carrier reported ${to.toLowerCase().replace(/_/g, " ")}`,
+      });
+    });
+
     return this.loadDetail(id);
   }
 

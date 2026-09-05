@@ -176,6 +176,12 @@ export interface LoadView {
   updatedByUserId: string | null;
   postedAt: string | null;
   cancelledAt: string | null;
+  /** Milestone 3 operational lifecycle timestamps. Null until the assigned
+   *  carrier reports the corresponding movement (and legitimately null forever
+   *  for any load that never reached that stage). */
+  pickedUpAt: string | null;
+  deliveredAt: string | null;
+  completedAt: string | null;
   /** Marketplace (Milestone 2): active-offer count + award outcome. */
   marketplace: LoadMarketplaceView;
   createdAt: string;

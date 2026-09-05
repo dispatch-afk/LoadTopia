@@ -115,6 +115,55 @@ export async function loadsRoutes(app: FastifyInstance): Promise<void> {
     return load;
   });
 
+  // Milestone 3: carrier operational lifecycle. Explicit action endpoints (no
+  // generic status PATCH). Gated by the SHIPMENT_OPERATE_ASSIGNED permission in
+  // the preHandler, then by canOperateShipment() against THIS load's carrier
+  // company in the service (404 for readers who cannot see the load, 403 for a
+  // reader who is not the assigned carrier, e.g. the shipper). COMPLETE is
+  // deliberately NOT exposed here — it gates on approved-POD readiness.
+  const operateShipment = {
+    preHandler: [app.requireCompanyPermission("shipment:operate:assigned")],
+  };
+
+  app.post("/loads/:id/pickup", operateShipment, async (request) => {
+    const actor = request.currentUser!;
+    const { id } = idParam.parse(request.params);
+    const load = await service.pickup(actor, id);
+    await writeAudit(app.prisma, request, {
+      actorUserId: actor.userId,
+      action: "load.pickup",
+      entityType: "load",
+      entityId: id,
+    });
+    return load;
+  });
+
+  app.post("/loads/:id/in-transit", operateShipment, async (request) => {
+    const actor = request.currentUser!;
+    const { id } = idParam.parse(request.params);
+    const load = await service.startTransit(actor, id);
+    await writeAudit(app.prisma, request, {
+      actorUserId: actor.userId,
+      action: "load.in_transit",
+      entityType: "load",
+      entityId: id,
+    });
+    return load;
+  });
+
+  app.post("/loads/:id/deliver", operateShipment, async (request) => {
+    const actor = request.currentUser!;
+    const { id } = idParam.parse(request.params);
+    const load = await service.deliver(actor, id);
+    await writeAudit(app.prisma, request, {
+      actorUserId: actor.userId,
+      action: "load.deliver",
+      entityType: "load",
+      entityId: id,
+    });
+    return load;
+  });
+
   // Rate Confirmation (Milestone 3). Readable by the owning shipper, the
   // assigned/winning carrier, and admin — everyone else 404s (IDOR-safe).
   // Lazily completes generation if the rendered PDF is not ready yet; returns a
