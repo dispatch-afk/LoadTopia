@@ -164,6 +164,26 @@ export async function loadsRoutes(app: FastifyInstance): Promise<void> {
     return load;
   });
 
+  // DELIVERED -> COMPLETED. Shipper-owned (load:update:own, like /assign) —
+  // NOT the carrier-operation permission. Gated server-side by an approved,
+  // active POD (assertCompletionReadiness, a pure DB query inside the txn).
+  app.post(
+    "/loads/:id/complete",
+    { preHandler: [app.requireCompanyPermission("load:update:own")] },
+    async (request) => {
+      const actor = request.currentUser!;
+      const { id } = idParam.parse(request.params);
+      const load = await service.complete(actor, id);
+      await writeAudit(app.prisma, request, {
+        actorUserId: actor.userId,
+        action: "load.complete",
+        entityType: "load",
+        entityId: id,
+      });
+      return load;
+    },
+  );
+
   // Rate Confirmation (Milestone 3). Readable by the owning shipper, the
   // assigned/winning carrier, and admin — everyone else 404s (IDOR-safe).
   // Lazily completes generation if the rendered PDF is not ready yet; returns a

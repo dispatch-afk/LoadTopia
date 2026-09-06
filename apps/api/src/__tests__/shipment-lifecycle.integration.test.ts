@@ -387,9 +387,9 @@ suite("shipment operational lifecycle (integration)", () => {
     expect(await statusEvents(loadId, "DELIVERED")).toHaveLength(1);
   });
 
-  // ── completion stays unexposed ──────────────────────────────────
+  // ── completion is shipper-owned and POD-gated (see completion.integration) ──
 
-  it("there is no complete endpoint in this slice, for anyone", async () => {
+  it("the carrier can never complete; the shipper cannot complete a DELIVERED load with no approved POD", async () => {
     const s = await shipper();
     const c = await carrier();
     const loadId = await assignedLoad(s, c);
@@ -397,12 +397,19 @@ suite("shipment operational lifecycle (integration)", () => {
     await op(c.cookie, loadId, "in-transit");
     await op(c.cookie, loadId, "deliver");
 
-    for (const cookie of [c.cookie, s.cookie]) {
-      const res = await api.inject(
-        authed(cookie, { method: "POST", url: `/api/loads/${loadId}/complete` }),
-      );
-      expect(res.statusCode).toBe(404); // route does not exist
-    }
+    // carrier: 403 — /complete requires the shipper's load:update:own, not
+    // SHIPMENT_OPERATE_ASSIGNED
+    expect(
+      (await api.inject(authed(c.cookie, { method: "POST", url: `/api/loads/${loadId}/complete` })))
+        .statusCode,
+    ).toBe(403);
+    // shipper: 409 — no approved POD yet (readiness gate)
+    const shipperTry = await api.inject(
+      authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/complete` }),
+    );
+    expect(shipperTry.statusCode).toBe(409);
+    expect(shipperTry.json().error.code).toBe("COMPLETION_NOT_READY");
+
     const load = await prisma.load.findUniqueOrThrow({ where: { id: loadId } });
     expect(load.status).toBe("DELIVERED");
     expect(load.completedAt).toBeNull();

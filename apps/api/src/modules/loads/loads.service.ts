@@ -25,7 +25,7 @@ import {
   type Paginated,
   type UpdateLoadInput,
 } from "@loadtopia/shared";
-import { badRequest, conflict, notFound } from "../../lib/errors";
+import { AppError, badRequest, conflict, notFound } from "../../lib/errors";
 import { appendLoadEvent, atomicLoadTransition } from "../../lib/load-lifecycle";
 import { paginate, toSkipTake } from "../../lib/pagination";
 import { PricingService } from "../pricing/pricing.service";
@@ -509,6 +509,63 @@ export class LoadsService {
           ...(stamp.deliveredAt ? { deliveredAt: now } : {}),
         },
         note: `carrier reported ${to.toLowerCase().replace(/_/g, " ")}`,
+      });
+    });
+
+    return this.loadDetail(id);
+  }
+
+  /**
+   * `DELIVERED → COMPLETED`. SHIPPER-owned (never the carrier) — uses
+   * `canModifyLoad` + `LOAD_UPDATE_OWN`, exactly like {@link assign}. Gated by
+   * completion readiness, evaluated as a PURE DATABASE query INSIDE the
+   * load-locked transaction: at least one POD row for this load that is
+   * confirmed, `review_status = APPROVED`, and `removed_at IS NULL`. No
+   * StorageProvider call — a later object-store outage cannot invalidate an
+   * already-established approved-POD review (Decision 5). No payment,
+   * invoicing, or settlement side effect — this is operational completion only.
+   */
+  async complete(actor: AuthenticatedActor, id: string): Promise<LoadView> {
+    const load = await this.prisma.load.findUnique({ where: { id } });
+    if (!load) throw notFound("Load not found");
+    assertCanModifyLoad(actor, load);
+    assertPermission(actor, Permission.LOAD_UPDATE_OWN);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT 1 FROM loads WHERE id = ${id}::uuid FOR UPDATE`;
+      const fresh = await tx.load.findUniqueOrThrow({
+        where: { id },
+        select: { status: true, shipperCompanyId: true, carrierCompanyId: true },
+      });
+      assertCanModifyLoad(actor, fresh);
+      assertLoadTransition(fresh.status, LoadStatus.COMPLETED); // precise 409 unless DELIVERED
+
+      const approvedPod = await tx.loadDocument.findFirst({
+        where: {
+          loadId: id,
+          docType: "POD",
+          confirmedAt: { not: null },
+          reviewStatus: "APPROVED",
+          removedAt: null,
+        },
+        select: { id: true },
+      });
+      if (!approvedPod) {
+        throw new AppError(
+          409,
+          "COMPLETION_NOT_READY",
+          "This shipment cannot be completed until an uploaded POD has been reviewed and approved.",
+        );
+      }
+
+      await atomicLoadTransition(tx, {
+        id,
+        from: fresh.status,
+        to: LoadStatus.COMPLETED,
+        actorUserId: actor.userId,
+        actorCompanyId: actor.companyId,
+        extra: { completedAt: new Date() },
+        note: "shipper closed out the shipment",
       });
     });
 

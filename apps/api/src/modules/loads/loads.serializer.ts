@@ -1,5 +1,10 @@
 import { EXPOSED_LOAD_STATUSES, isLoadOnMarket, nextLoadStatuses } from "@loadtopia/domain";
-import { type LoadEventView, type LoadListItem, type LoadView } from "@loadtopia/shared";
+import {
+  type LoadEventView,
+  type LoadListItem,
+  LoadStatus,
+  type LoadView,
+} from "@loadtopia/shared";
 import type { Prisma } from "@loadtopia/db";
 import { MOCK_PROVIDER_NAME } from "@loadtopia/providers";
 import { money } from "../../lib/money";
@@ -23,6 +28,19 @@ export const loadDetailInclude = {
   carrierCompany: { select: { id: true, name: true } },
   awardedOfferRound: { select: { amount: true, currency: true } },
   offerThreads: { where: { status: "ACTIVE" }, select: { id: true } },
+  // Existence of an active, approved POD — drives `completionReady` and gates
+  // whether COMPLETED is advertised in `availableTransitions`. Indexed by
+  // (load_id, doc_type, review_status); bounded to one row.
+  documents: {
+    where: {
+      docType: "POD",
+      confirmedAt: { not: null },
+      reviewStatus: "APPROVED",
+      removedAt: null,
+    },
+    select: { id: true },
+    take: 1,
+  },
   events: {
     orderBy: { createdAt: "asc" },
     include: { actor: { select: { firstName: true, lastName: true } } },
@@ -66,6 +84,10 @@ function toEventView(e: LoadDetailRow["events"][number]): LoadEventView {
 }
 
 export function toLoadView(l: LoadDetailRow): LoadView {
+  // Completion needs a DELIVERED load AND an active approved POD. COMPLETED is
+  // only advertised as an available transition when it would actually succeed —
+  // so a client never sees a "Complete" action it cannot use.
+  const completionReady = l.status === LoadStatus.DELIVERED && l.documents.length > 0;
   return {
     id: l.id,
     referenceNumber: l.referenceNumber,
@@ -93,7 +115,10 @@ export function toLoadView(l: LoadDetailRow): LoadView {
       isMock: l.routingProvider === MOCK_PROVIDER_NAME,
       routedAt: l.routedAt?.toISOString() ?? null,
     },
-    availableTransitions: nextLoadStatuses(l.status).filter((s) => EXPOSED_LOAD_STATUSES.includes(s)),
+    availableTransitions: nextLoadStatuses(l.status)
+      .filter((s) => EXPOSED_LOAD_STATUSES.includes(s))
+      .filter((s) => s !== LoadStatus.COMPLETED || completionReady),
+    completionReady,
     createdByUserId: l.createdByUserId,
     updatedByUserId: l.updatedByUserId,
     postedAt: l.postedAt?.toISOString() ?? null,

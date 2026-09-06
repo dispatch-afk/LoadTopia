@@ -174,6 +174,10 @@ export interface LoadView {
   deliveryWindowEnd: string | null;
   routing: LoadRouting;
   availableTransitions: LoadStatus[];
+  /** True only when this load is DELIVERED and has an active, APPROVED POD —
+   *  i.e. `POST /loads/:id/complete` would succeed for the owning shipper.
+   *  COMPLETED appears in `availableTransitions` only when this is true. */
+  completionReady: boolean;
   createdByUserId: string;
   updatedByUserId: string | null;
   postedAt: string | null;
