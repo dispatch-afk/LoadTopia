@@ -2,8 +2,11 @@ import type { PrismaClient } from "@loadtopia/db";
 import {
   assertCanReadLoad,
   assertCanUploadOperationalDocument,
+  buildDocumentRemovedEvent,
   buildDocumentUploadedEvent,
   isAdmin,
+  isTerminalDocumentReviewStatus,
+  isTerminalLoadStatus,
   isWithinOperationalActivityWindow,
 } from "@loadtopia/domain";
 import { type StorageProvider, StorageProviderError } from "@loadtopia/providers";
@@ -261,6 +264,80 @@ export class DocumentsService {
       throw this.toStorageError(err);
     }
     return { url: signed.url, expiresAt: signed.expiresAt };
+  }
+
+  /**
+   * Soft-remove a document (Rev. 2 §5 / Correction 6). Only the company that
+   * uploaded it, only while the load is non-terminal. Reviewed-POD retention is
+   * a HARD rule: an APPROVED or REJECTED POD is permanent evidence and can
+   * never be removed, by anyone. Removal is always soft (`removed_at`) — the
+   * row and its history are never physically deleted, and the S3 object is
+   * left intact for auditability.
+   */
+  async remove(actor: AuthenticatedActor, documentId: string): Promise<DocumentView> {
+    const doc = await this.prisma.loadDocument.findUnique({
+      where: { id: documentId },
+      include: {
+        load: { select: { shipperCompanyId: true, carrierCompanyId: true, status: true } },
+        reviews: true,
+      },
+    });
+    if (!doc) throw notFound("Document not found");
+    assertCanReadLoad(actor, doc.load);
+    // Rev. 2 §6: only confirmed documents are removable; a never-confirmed intent
+    // is invisible everywhere and simply "not found" here.
+    if (doc.confirmedAt === null) throw notFound("Document not found");
+    if (!isAdmin(actor) && actor.companyId !== doc.uploadedByCompanyId) {
+      throw forbidden("Only the company that uploaded a document may remove it.");
+    }
+    if (doc.removedAt !== null) {
+      return toDocumentView(doc, doc.reviews[0] ?? null); // idempotent
+    }
+    if (isTerminalLoadStatus(doc.load.status)) {
+      throw conflict("Documents cannot be changed once the shipment is completed or cancelled.");
+    }
+    if (
+      doc.docType === "POD" &&
+      doc.reviewStatus !== null &&
+      isTerminalDocumentReviewStatus(doc.reviewStatus)
+    ) {
+      throw forbidden("A reviewed POD is permanent evidence and cannot be removed.");
+    }
+
+    const now = new Date();
+    const removed = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT 1 FROM load_documents WHERE id = ${documentId}::uuid FOR UPDATE`;
+      const fresh = await tx.loadDocument.findUniqueOrThrow({
+        where: { id: documentId },
+        select: { docType: true, reviewStatus: true, removedAt: true },
+      });
+      if (fresh.removedAt !== null) {
+        return tx.loadDocument.findUniqueOrThrow({ where: { id: documentId } });
+      }
+      if (
+        fresh.docType === "POD" &&
+        fresh.reviewStatus !== null &&
+        isTerminalDocumentReviewStatus(fresh.reviewStatus)
+      ) {
+        throw forbidden("A reviewed POD is permanent evidence and cannot be removed.");
+      }
+      const updated = await tx.loadDocument.update({
+        where: { id: documentId },
+        data: { removedAt: now },
+      });
+      await appendLoadEvent(
+        tx,
+        buildDocumentRemovedEvent({
+          loadId: doc.loadId,
+          actorUserId: actor.userId,
+          actorCompanyId: actor.companyId,
+          documentId,
+        }),
+      );
+      return updated;
+    });
+
+    return toDocumentView(removed, doc.reviews[0] ?? null);
   }
 
   // ── helpers ────────────────────────────────────────────────────────

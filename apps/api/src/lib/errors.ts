@@ -33,6 +33,7 @@ const DOMAIN_ERROR_CODES = new Set([
   "NOT_FOUND",
   "VALIDATION_ERROR",
   "INVALID_LOAD_TRANSITION",
+  "INVALID_DOCUMENT_REVIEW_TRANSITION",
   "COMPANY_CONTEXT",
   // Marketplace domain errors (@loadtopia/domain marketplace/*). Each carries a
   // numeric statusCode; the handler below trusts it (default 409 for the
@@ -96,7 +97,8 @@ export function registerErrorHandler(app: FastifyInstance): void {
       const status =
         typeof error.statusCode === "number"
           ? error.statusCode
-          : error.code === "INVALID_LOAD_TRANSITION"
+          : error.code === "INVALID_LOAD_TRANSITION" ||
+              error.code === "INVALID_DOCUMENT_REVIEW_TRANSITION"
             ? 409
             : 400;
       const details =
