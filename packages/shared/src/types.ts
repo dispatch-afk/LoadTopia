@@ -203,6 +203,32 @@ export interface LoadMarketplaceView {
   } | null;
 }
 
+// --- Operations (Milestone 3): manual check-ins ------------------------ ---
+
+/**
+ * A MANUAL operational check-in — a carrier-reported city/state (and optional
+ * reported coordinates) for an assigned shipment, recorded in LoadTopia at
+ * `recordedAt`. This is NOT a GPS fix, live location, or verified position;
+ * it is what a person typed in. Append-only: there is no edit or delete.
+ */
+export interface CheckInView {
+  id: string;
+  loadId: string;
+  /** The carrier user who recorded it. */
+  actorUserId: string;
+  city: string;
+  state: string;
+  note: string | null;
+  /** Reported latitude/longitude as decimal strings, or null. Always both or
+   *  neither. Never derived from city/state. */
+  latitude: string | null;
+  longitude: string | null;
+  /** When the check-in was recorded in LoadTopia (server clock) — not a device
+   *  timestamp and not a GPS time. */
+  recordedAt: string;
+  createdAt: string;
+}
+
 // --- Operations (Milestone 3): Rate Confirmation ------------------------ ---
 
 export interface RateConfirmationAddressView {

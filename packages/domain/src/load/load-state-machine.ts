@@ -80,6 +80,24 @@ export const IN_MOTION_LOAD_STATUSES: readonly LoadStatus[] = [
   LoadStatus.DELIVERED,
 ];
 
+/**
+ * Statuses during which post-assignment operational activity may be recorded
+ * against a load (Milestone 3: manual check-ins; operational documents later).
+ * Deliberately EXCLUDES the pre-assignment AWARDED window and every terminal or
+ * pre-award status — a COMPLETED or CANCELLED load's operational history is
+ * frozen; reads stay available forever.
+ */
+export const OPERATIONAL_ACTIVITY_STATUSES: readonly LoadStatus[] = [
+  LoadStatus.CARRIER_ASSIGNED,
+  LoadStatus.PICKED_UP,
+  LoadStatus.IN_TRANSIT,
+  LoadStatus.DELIVERED,
+];
+
+export function isWithinOperationalActivityWindow(status: LoadStatus): boolean {
+  return OPERATIONAL_ACTIVITY_STATUSES.includes(status);
+}
+
 export class LoadTransitionError extends Error {
   readonly code = "INVALID_LOAD_TRANSITION";
   constructor(

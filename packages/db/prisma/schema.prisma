@@ -653,8 +653,10 @@ model LoadCheckIn {
   note        String?
   latitude    Decimal? @db.Decimal(9, 6)
   longitude   Decimal? @db.Decimal(9, 6)
-  /// Carrier-supplied "as of" time — validated against a small clock-skew
-  /// tolerance and never before the load's assignedAt (service layer).
+  /// When the check-in was recorded in LoadTopia — the SERVER clock at write
+  /// time (the same `now` as the CHECK_IN_ADDED event's transaction). The M3
+  /// manual flow does not accept a client-supplied timestamp; this is not a
+  /// device time and not a GPS fix time.
   recordedAt  DateTime @map("recorded_at") @db.Timestamptz(6)
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
