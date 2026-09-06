@@ -11,6 +11,7 @@ import {
   buildLoadUpdatedEvent,
   canCancelLoad,
   formatLoadNumber,
+  loadViewerRole,
   Permission,
   type LoadEventDraft,
 } from "@loadtopia/domain";
@@ -45,12 +46,13 @@ export class LoadsService {
     this.pricing = new PricingService(prisma, providers.pricing);
   }
 
-  private async loadDetail(id: string): Promise<LoadView> {
+  private async loadDetail(id: string, actor: AuthenticatedActor): Promise<LoadView> {
     const row = await this.prisma.load.findUniqueOrThrow({
       where: { id },
       include: loadDetailInclude,
     });
-    return toLoadView(row);
+    // `availableTransitions` is actor-aware — see loads.serializer.
+    return toLoadView(row, loadViewerRole(actor, row));
   }
 
   // -- create --------------------------------------------------------------
@@ -129,7 +131,7 @@ export class LoadsService {
       return load.id;
     });
 
-    return this.loadDetail(id);
+    return this.loadDetail(id, actor);
   }
 
   // -- read ---------------------------------------------------------------
@@ -162,7 +164,7 @@ export class LoadsService {
     });
     if (!load) throw notFound("Load not found");
     assertCanReadLoad(actor, load);
-    return this.loadDetail(id);
+    return this.loadDetail(id, actor);
   }
 
   // -- update -----------------------------------------------------------
@@ -284,7 +286,7 @@ export class LoadsService {
       );
     });
 
-    return this.loadDetail(id);
+    return this.loadDetail(id, actor);
   }
 
   // -- delete (DRAFT only, hard) ------------------------------------------
@@ -397,7 +399,7 @@ export class LoadsService {
       this.log,
     );
 
-    return this.loadDetail(id);
+    return this.loadDetail(id, actor);
   }
 
   /**
@@ -422,7 +424,7 @@ export class LoadsService {
       actor.companyId,
       { assignedAt: new Date() },
     );
-    return this.loadDetail(id);
+    return this.loadDetail(id, actor);
   }
 
   // -- Milestone 3: carrier operational lifecycle ----------------------
@@ -512,7 +514,7 @@ export class LoadsService {
       });
     });
 
-    return this.loadDetail(id);
+    return this.loadDetail(id, actor);
   }
 
   /**
@@ -569,7 +571,7 @@ export class LoadsService {
       });
     });
 
-    return this.loadDetail(id);
+    return this.loadDetail(id, actor);
   }
 
   async unpost(actor: AuthenticatedActor, id: string): Promise<LoadView> {
@@ -587,7 +589,7 @@ export class LoadsService {
       actor.companyId,
       { postedAt: null },
     );
-    return this.loadDetail(id);
+    return this.loadDetail(id, actor);
   }
 
   async cancel(actor: AuthenticatedActor, id: string, reason?: string): Promise<LoadView> {
@@ -608,7 +610,7 @@ export class LoadsService {
       { cancelledAt: new Date() },
       reason,
     );
-    return this.loadDetail(id);
+    return this.loadDetail(id, actor);
   }
 
   // -- helpers ---------------------------------------------------------

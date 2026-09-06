@@ -3,17 +3,20 @@ import { describe, expect, it } from "vitest";
 import {
   AuthorizationError,
   ResourceScopeError,
+  assertCanManageOwnOperationalDocument,
   assertCanModifyLoad,
   assertCanOperateShipment,
   assertCanUploadOperationalDocument,
   assertCompanyScope,
   assertPermission,
+  canManageOwnOperationalDocument,
   canModifyLoad,
   canOperateShipment,
   canReadLoad,
   canUploadOperationalDocument,
   hasPermission,
   isSameCompany,
+  loadViewerRole,
 } from "./policy";
 import { Permission } from "./permissions";
 
@@ -226,5 +229,67 @@ describe("operational-document upload policy (Milestone 3, Rev. 2 §7)", () => {
     expect(canUploadOperationalDocument(admin, { ...assigned, status: LoadStatus.PICKED_UP })).toBe(
       true,
     );
+  });
+});
+
+describe("canManageOwnOperationalDocument (confirm / remove — Slice 6A)", () => {
+  const load = {
+    shipperCompanyId: "co-shipper",
+    carrierCompanyId: "co-carrier",
+    status: LoadStatus.PICKED_UP,
+  };
+  const shipperUpload = { uploadedByCompanyId: "co-shipper" };
+  const carrierUpload = { uploadedByCompanyId: "co-carrier" };
+  // same company as the uploader, but the wrong role → lacks the permission
+  const carrierRoleInShipperCo: AuthenticatedActor = { ...carrier, companyId: "co-shipper" };
+  const shipperRoleInCarrierCo: AuthenticatedActor = { ...shipper, companyId: "co-carrier" };
+
+  it("company scope alone is NOT enough — the upload-side permission is also required", () => {
+    // shipper-uploaded doc: a shipper-role member of the shipper company may act
+    expect(canManageOwnOperationalDocument(shipper, load, shipperUpload)).toBe(true);
+    // ...a carrier-role member of the SAME shipper company may not (no LOAD_UPDATE_OWN)
+    expect(canManageOwnOperationalDocument(carrierRoleInShipperCo, load, shipperUpload)).toBe(
+      false,
+    );
+
+    // carrier-uploaded doc: a carrier-role member of the carrier company may act
+    expect(canManageOwnOperationalDocument(carrier, load, carrierUpload)).toBe(true);
+    // ...a shipper-role member of the SAME carrier company may not (no SHIPMENT_OPERATE_ASSIGNED)
+    expect(canManageOwnOperationalDocument(shipperRoleInCarrierCo, load, carrierUpload)).toBe(
+      false,
+    );
+  });
+
+  it("the non-uploading party cannot manage the other party's document", () => {
+    expect(canManageOwnOperationalDocument(carrier, load, shipperUpload)).toBe(false);
+    expect(canManageOwnOperationalDocument(shipper, load, carrierUpload)).toBe(false);
+  });
+
+  it("a cross-company actor 404s (IDOR-safe), a same-company wrong-role actor 403s", () => {
+    expect(() => assertCanManageOwnOperationalDocument(otherShipper, load, shipperUpload)).toThrow(
+      ResourceScopeError,
+    );
+    expect(() =>
+      assertCanManageOwnOperationalDocument(carrierRoleInShipperCo, load, shipperUpload),
+    ).toThrow(AuthorizationError);
+  });
+
+  it("admin may manage either party's document", () => {
+    expect(canManageOwnOperationalDocument(admin, load, shipperUpload)).toBe(true);
+    expect(canManageOwnOperationalDocument(admin, load, carrierUpload)).toBe(true);
+  });
+});
+
+describe("loadViewerRole", () => {
+  const load = { shipperCompanyId: "co-shipper", carrierCompanyId: "co-carrier" };
+
+  it("classifies the actor against a specific load", () => {
+    expect(loadViewerRole(shipper, load)).toBe("shipper");
+    expect(loadViewerRole(carrier, load)).toBe("carrier");
+    expect(loadViewerRole(admin, load)).toBe("admin");
+    expect(loadViewerRole(otherShipper, load)).toBe("other");
+    expect(
+      loadViewerRole(carrier, { shipperCompanyId: "co-shipper", carrierCompanyId: null }),
+    ).toBe("other");
   });
 });

@@ -1,4 +1,9 @@
-import { EXPOSED_LOAD_STATUSES, isLoadOnMarket, nextLoadStatuses } from "@loadtopia/domain";
+import {
+  EXPOSED_LOAD_STATUSES,
+  isLoadOnMarket,
+  type LoadViewerRole,
+  nextLoadStatuses,
+} from "@loadtopia/domain";
 import {
   type LoadEventView,
   type LoadListItem,
@@ -83,11 +88,41 @@ function toEventView(e: LoadDetailRow["events"][number]): LoadEventView {
   };
 }
 
-export function toLoadView(l: LoadDetailRow): LoadView {
-  // Completion needs a DELIVERED load AND an active approved POD. COMPLETED is
-  // only advertised as an available transition when it would actually succeed —
-  // so a client never sees a "Complete" action it cannot use.
+/**
+ * The party that can drive a given load transition through an API endpoint.
+ * A `(from, to)` pair not listed here has no direct load endpoint — either it
+ * flows from the offer/marketplace surface (e.g. `POSTED → AWARDED`) or it is
+ * the dormant `AWARDED → POSTED` — and is left in `availableTransitions`
+ * unchanged for every reader (Slice 6A does not touch that behaviour).
+ */
+function transitionActor(from: LoadStatus, to: LoadStatus): "shipper" | "carrier" | null {
+  if (to === LoadStatus.CANCELLED) return "shipper"; // POST /loads/:id/cancel
+  if (from === LoadStatus.DRAFT && to === LoadStatus.POSTED) return "shipper"; // /post
+  if (from === LoadStatus.POSTED && to === LoadStatus.DRAFT) return "shipper"; // /unpost
+  if (from === LoadStatus.AWARDED && to === LoadStatus.CARRIER_ASSIGNED) return "shipper"; // /assign
+  if (from === LoadStatus.DELIVERED && to === LoadStatus.COMPLETED) return "shipper"; // /complete
+  if (from === LoadStatus.CARRIER_ASSIGNED && to === LoadStatus.PICKED_UP) return "carrier"; // /pickup
+  if (from === LoadStatus.PICKED_UP && to === LoadStatus.IN_TRANSIT) return "carrier"; // /in-transit
+  if (from === LoadStatus.IN_TRANSIT && to === LoadStatus.DELIVERED) return "carrier"; // /deliver
+  return null;
+}
+
+export function toLoadView(l: LoadDetailRow, viewerRole: LoadViewerRole): LoadView {
+  // Objective, actor-independent: this load is DELIVERED and has an active
+  // approved POD, so completion WOULD succeed for an authorized shipper.
   const completionReady = l.status === LoadStatus.DELIVERED && l.documents.length > 0;
+
+  // Actor-aware: only advertise transitions THIS viewer could actually trigger.
+  // Endpoint enforcement is unchanged — this only removes misleading UI hints.
+  const availableTransitions = nextLoadStatuses(l.status)
+    .filter((s) => EXPOSED_LOAD_STATUSES.includes(s))
+    .filter((s) => {
+      const owner = transitionActor(l.status, s);
+      if (owner !== null && viewerRole !== "admin" && owner !== viewerRole) return false;
+      if (s === LoadStatus.COMPLETED) return completionReady;
+      return true;
+    });
+
   return {
     id: l.id,
     referenceNumber: l.referenceNumber,
@@ -115,9 +150,7 @@ export function toLoadView(l: LoadDetailRow): LoadView {
       isMock: l.routingProvider === MOCK_PROVIDER_NAME,
       routedAt: l.routedAt?.toISOString() ?? null,
     },
-    availableTransitions: nextLoadStatuses(l.status)
-      .filter((s) => EXPOSED_LOAD_STATUSES.includes(s))
-      .filter((s) => s !== LoadStatus.COMPLETED || completionReady),
+    availableTransitions,
     completionReady,
     createdByUserId: l.createdByUserId,
     updatedByUserId: l.updatedByUserId,

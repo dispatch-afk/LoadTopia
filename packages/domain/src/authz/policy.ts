@@ -110,7 +110,10 @@ export function canOperateShipment(actor: AuthenticatedActor, load: ShipmentAcce
   return load.status !== LoadStatus.AWARDED;
 }
 
-export function assertCanOperateShipment(actor: AuthenticatedActor, load: ShipmentAccessView): void {
+export function assertCanOperateShipment(
+  actor: AuthenticatedActor,
+  load: ShipmentAccessView,
+): void {
   if (!canReadLoad(actor, load)) throw new ResourceScopeError();
   if (!canOperateShipment(actor, load)) throw new AuthorizationError();
 }
@@ -155,6 +158,60 @@ export function assertCanUploadOperationalDocument(
 ): void {
   if (!canReadLoad(actor, load)) throw new ResourceScopeError();
   if (!canUploadOperationalDocument(actor, load)) throw new AuthorizationError();
+}
+
+/**
+ * May `actor` CONFIRM or SOFT-REMOVE an operational document its own company
+ * uploaded? (Slice 6A hardening.) Company scope is necessary but NOT sufficient:
+ * the actor must ALSO hold the same permission the upload REQUEST required for
+ * that company side — otherwise any member of the uploading company could
+ * confirm/remove without ever being allowed to upload. Concretely:
+ *
+ *   - `actor.companyId` must equal `document.uploadedByCompanyId`, AND
+ *   - {@link canUploadOperationalDocument} must hold for `actor` on this load
+ *     (which pins the shipper branch to `LOAD_UPDATE_OWN` and the carrier
+ *     branch to `SHIPMENT_OPERATE_ASSIGNED` + being THIS load's carrier +
+ *     not-AWARDED).
+ *
+ * It does NOT require `actor.userId === document.uploadedByUserId` — any
+ * properly-permissioned member of the uploading company may act. Admin is
+ * unchanged.
+ */
+export function canManageOwnOperationalDocument(
+  actor: AuthenticatedActor,
+  load: ShipmentAccessView,
+  document: { uploadedByCompanyId: string },
+): boolean {
+  if (isAdmin(actor)) return true;
+  if (actor.companyId === null) return false;
+  if (actor.companyId !== document.uploadedByCompanyId) return false;
+  return canUploadOperationalDocument(actor, load);
+}
+
+export function assertCanManageOwnOperationalDocument(
+  actor: AuthenticatedActor,
+  load: ShipmentAccessView,
+  document: { uploadedByCompanyId: string },
+): void {
+  if (!canReadLoad(actor, load)) throw new ResourceScopeError();
+  if (!canManageOwnOperationalDocument(actor, load, document)) throw new AuthorizationError();
+}
+
+/** How `actor` relates to a specific load — drives which lifecycle transitions
+ *  a `LoadView` advertises to them (see the loads serializer). */
+export type LoadViewerRole = "shipper" | "carrier" | "admin" | "other";
+
+export function loadViewerRole(actor: AuthenticatedActor, load: LoadAccessView): LoadViewerRole {
+  if (isAdmin(actor)) return "admin";
+  if (actor.companyId !== null && actor.companyId === load.shipperCompanyId) return "shipper";
+  if (
+    load.carrierCompanyId !== null &&
+    actor.companyId !== null &&
+    actor.companyId === load.carrierCompanyId
+  ) {
+    return "carrier";
+  }
+  return "other";
 }
 
 /** A company's own record is readable/editable by its members (or staff). */

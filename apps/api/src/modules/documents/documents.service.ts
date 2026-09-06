@@ -1,10 +1,10 @@
 import type { PrismaClient } from "@loadtopia/db";
 import {
+  assertCanManageOwnOperationalDocument,
   assertCanReadLoad,
   assertCanUploadOperationalDocument,
   buildDocumentRemovedEvent,
   buildDocumentUploadedEvent,
-  isAdmin,
   isTerminalDocumentReviewStatus,
   isTerminalLoadStatus,
   isWithinOperationalActivityWindow,
@@ -122,10 +122,10 @@ export class DocumentsService {
       },
     });
     if (!doc) throw notFound("Document not found");
-    assertCanReadLoad(actor, doc.load);
-    if (!isAdmin(actor) && actor.companyId !== doc.uploadedByCompanyId) {
-      throw forbidden("Only the company that requested this upload may confirm it.");
-    }
+    // Company scope AND the permission the upload REQUEST required (shipper:
+    // LOAD_UPDATE_OWN; carrier: SHIPMENT_OPERATE_ASSIGNED + this load's carrier)
+    // — not company membership alone (Slice 6A hardening). 404 outside scope.
+    assertCanManageOwnOperationalDocument(actor, doc.load, doc);
 
     if (doc.removedAt !== null) throw conflict("This document has been removed.");
     if (doc.confirmedAt !== null) {
@@ -283,13 +283,12 @@ export class DocumentsService {
       },
     });
     if (!doc) throw notFound("Document not found");
-    assertCanReadLoad(actor, doc.load);
+    // Same rule as confirm: company scope AND the upload-request permission for
+    // that company side — never membership alone (Slice 6A). 404 outside scope.
+    assertCanManageOwnOperationalDocument(actor, doc.load, doc);
     // Rev. 2 §6: only confirmed documents are removable; a never-confirmed intent
     // is invisible everywhere and simply "not found" here.
     if (doc.confirmedAt === null) throw notFound("Document not found");
-    if (!isAdmin(actor) && actor.companyId !== doc.uploadedByCompanyId) {
-      throw forbidden("Only the company that uploaded a document may remove it.");
-    }
     if (doc.removedAt !== null) {
       return toDocumentView(doc, doc.reviews[0] ?? null); // idempotent
     }
