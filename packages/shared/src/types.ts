@@ -2,6 +2,8 @@ import type {
   CarrierOperatingStatus,
   CarrierVerificationStatus,
   CompanyType,
+  DocumentReviewStatus,
+  DocumentType,
   EquipmentType,
   LoadEventType,
   LoadStatus,
@@ -227,6 +229,65 @@ export interface CheckInView {
    *  timestamp and not a GPS time. */
   recordedAt: string;
   createdAt: string;
+}
+
+// --- Operations (Milestone 3): operational documents ------------------ ---
+
+/** Derived lifecycle state of a `load_documents` row. */
+export type DocumentStatus = "PENDING" | "CONFIRMED" | "REMOVED";
+
+/**
+ * An operational document (BOL / POD / OTHER). Metadata only — the file itself
+ * is private and reachable solely through a short-lived signed download URL
+ * from a separate endpoint. A `PENDING` row is an authorized upload attempt,
+ * NOT a document LoadTopia possesses; list endpoints never return it.
+ */
+export interface DocumentView {
+  id: string;
+  loadId: string;
+  docType: DocumentType;
+  status: DocumentStatus;
+  contentType: string;
+  /** Declared at request, replaced by the storage-confirmed actual at confirm
+   *  (they are equal — strict equality is enforced). Null before confirm. */
+  sizeBytes: number | null;
+  originalFilename: string | null;
+  /** POD only; null for BOL/OTHER and for an unconfirmed POD. */
+  reviewStatus: DocumentReviewStatus | null;
+  /** The reviewer's reason — present only for a REJECTED POD. */
+  reviewReason: string | null;
+  /** Set only on a corrected POD re-upload; points at the REJECTED original. */
+  replacesDocumentId: string | null;
+  uploadedByUserId: string;
+  uploadedByCompanyId: string;
+  confirmedAt: string | null;
+  removedAt: string | null;
+  createdAt: string;
+}
+
+/** The signed instructions the browser uses to upload the file directly to
+ *  object storage. Never persisted; expires quickly. */
+export interface DocumentUploadInstructions {
+  url: string;
+  method: "PUT" | "POST";
+  /** Presigned-POST form fields to submit verbatim (present for `POST`). */
+  fields?: Record<string, string>;
+  headers: Record<string, string>;
+  expiresAt: string;
+  /** The hard maximum the storage layer will accept for this upload. */
+  maxBytes: number;
+}
+
+export interface DocumentUploadRequestView {
+  document: DocumentView;
+  upload: DocumentUploadInstructions;
+}
+
+/** A short-lived authorized download link for a confirmed, non-removed
+ *  document whose object storage confirms the file still exists. */
+export interface DocumentDownloadView {
+  url: string;
+  expiresAt: string;
 }
 
 // --- Operations (Milestone 3): Rate Confirmation ------------------------ ---

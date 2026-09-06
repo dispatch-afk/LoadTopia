@@ -13,6 +13,7 @@ import { authRoutes } from "./modules/auth/auth.routes";
 import { carrierProfileRoutes } from "./modules/carrier/carrier-profile.routes";
 import { checkInsRoutes } from "./modules/check-ins/check-ins.routes";
 import { companiesRoutes } from "./modules/companies/companies.routes";
+import { documentsRoutes } from "./modules/documents/documents.routes";
 import { equipmentRoutes } from "./modules/equipment/equipment.routes";
 import { healthRoutes } from "./modules/health/health.routes";
 import { loadsRoutes } from "./modules/loads/loads.routes";
@@ -69,6 +70,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await api.register(equipmentRoutes);
       await api.register(loadsRoutes);
       await api.register(checkInsRoutes);
+      await api.register(documentsRoutes);
       // Marketplace (Milestone 2)
       await api.register(carrierProfileRoutes);
       await api.register(pricingRoutes);

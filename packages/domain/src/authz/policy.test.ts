@@ -5,11 +5,13 @@ import {
   ResourceScopeError,
   assertCanModifyLoad,
   assertCanOperateShipment,
+  assertCanUploadOperationalDocument,
   assertCompanyScope,
   assertPermission,
   canModifyLoad,
   canOperateShipment,
   canReadLoad,
+  canUploadOperationalDocument,
   hasPermission,
   isSameCompany,
 } from "./policy";
@@ -154,9 +156,9 @@ describe("shipment operation policy (Milestone 3)", () => {
   });
 
   it("never lets an unassigned carrier operate — assertCanOperateShipment 404s, not 403s", () => {
-    expect(canOperateShipment(otherCarrier, { ...assigned, status: LoadStatus.CARRIER_ASSIGNED })).toBe(
-      false,
-    );
+    expect(
+      canOperateShipment(otherCarrier, { ...assigned, status: LoadStatus.CARRIER_ASSIGNED }),
+    ).toBe(false);
     expect(() =>
       assertCanOperateShipment(otherCarrier, { ...assigned, status: LoadStatus.CARRIER_ASSIGNED }),
     ).toThrow(ResourceScopeError);
@@ -173,5 +175,56 @@ describe("shipment operation policy (Milestone 3)", () => {
 
   it("lets admin operate any shipment", () => {
     expect(canOperateShipment(admin, { ...assigned, status: LoadStatus.PICKED_UP })).toBe(true);
+  });
+});
+
+describe("operational-document upload policy (Milestone 3, Rev. 2 §7)", () => {
+  const assigned = { shipperCompanyId: "co-shipper", carrierCompanyId: "co-carrier" };
+  const otherCarrier: AuthenticatedActor = { ...carrier, companyId: "co-carrier-2" };
+
+  it("lets the OWNING SHIPPER upload — using its normal load-management permission", () => {
+    for (const status of [
+      LoadStatus.CARRIER_ASSIGNED,
+      LoadStatus.PICKED_UP,
+      LoadStatus.IN_TRANSIT,
+      LoadStatus.DELIVERED,
+    ]) {
+      expect(canUploadOperationalDocument(shipper, { ...assigned, status })).toBe(true);
+    }
+  });
+
+  it("lets the ASSIGNED CARRIER upload once operational (not during AWARDED)", () => {
+    expect(
+      canUploadOperationalDocument(carrier, { ...assigned, status: LoadStatus.CARRIER_ASSIGNED }),
+    ).toBe(true);
+    expect(canUploadOperationalDocument(carrier, { ...assigned, status: LoadStatus.AWARDED })).toBe(
+      false,
+    );
+  });
+
+  it("denies an unrelated shipper (404) and a losing carrier (404)", () => {
+    expect(() =>
+      assertCanUploadOperationalDocument(otherShipper, {
+        ...assigned,
+        status: LoadStatus.PICKED_UP,
+      }),
+    ).toThrow(ResourceScopeError);
+    expect(() =>
+      assertCanUploadOperationalDocument(otherCarrier, {
+        ...assigned,
+        status: LoadStatus.PICKED_UP,
+      }),
+    ).toThrow(ResourceScopeError);
+  });
+
+  it("does not grant the shipper any status-transition or check-in ability", () => {
+    // still governed by canOperateShipment, which stays carrier-only
+    expect(canOperateShipment(shipper, { ...assigned, status: LoadStatus.PICKED_UP })).toBe(false);
+  });
+
+  it("lets admin upload", () => {
+    expect(canUploadOperationalDocument(admin, { ...assigned, status: LoadStatus.PICKED_UP })).toBe(
+      true,
+    );
   });
 });

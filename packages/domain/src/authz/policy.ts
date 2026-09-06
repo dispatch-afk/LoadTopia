@@ -1,6 +1,6 @@
 import type { AuthenticatedActor } from "@loadtopia/shared";
 import { LoadStatus, UserRole } from "@loadtopia/shared";
-import { type Permission, roleHasPermission } from "./permissions";
+import { Permission, roleHasPermission } from "./permissions";
 
 export class AuthorizationError extends Error {
   readonly code = "FORBIDDEN";
@@ -113,6 +113,48 @@ export function canOperateShipment(actor: AuthenticatedActor, load: ShipmentAcce
 export function assertCanOperateShipment(actor: AuthenticatedActor, load: ShipmentAccessView): void {
   if (!canReadLoad(actor, load)) throw new ResourceScopeError();
   if (!canOperateShipment(actor, load)) throw new AuthorizationError();
+}
+
+/**
+ * Operational-document upload access (Milestone 3, Rev. 2 §7). Unlike status
+ * transitions and check-ins, Rev. 2 authorizes BOTH parties to attach BOL / POD
+ * / OTHER evidence:
+ *
+ *   - the owning SHIPPER, with its normal load-management permission
+ *     ({@link Permission.LOAD_UPDATE_OWN}); or
+ *   - the ASSIGNED CARRIER company, once the shipment is actually operational
+ *     (CARRIER_ASSIGNED or later — the AWARDED window is excluded, exactly as
+ *     {@link canOperateShipment}), holding {@link Permission.SHIPMENT_OPERATE_ASSIGNED}.
+ *
+ * This is a document-specific boundary — it deliberately does NOT force the
+ * shipper through the carrier-only `canOperateShipment` / `SHIPMENT_OPERATE_ASSIGNED`
+ * concepts, and it does NOT grant the shipper any status-transition or check-in
+ * ability. `canModifyLoad` is untouched.
+ */
+export function canUploadOperationalDocument(
+  actor: AuthenticatedActor,
+  load: ShipmentAccessView,
+): boolean {
+  if (isAdmin(actor)) return true;
+  if (actor.companyId === null) return false;
+  if (actor.companyId === load.shipperCompanyId) {
+    return roleHasPermission(actor.role, Permission.LOAD_UPDATE_OWN);
+  }
+  if (load.carrierCompanyId !== null && actor.companyId === load.carrierCompanyId) {
+    return (
+      load.status !== LoadStatus.AWARDED &&
+      roleHasPermission(actor.role, Permission.SHIPMENT_OPERATE_ASSIGNED)
+    );
+  }
+  return false;
+}
+
+export function assertCanUploadOperationalDocument(
+  actor: AuthenticatedActor,
+  load: ShipmentAccessView,
+): void {
+  if (!canReadLoad(actor, load)) throw new ResourceScopeError();
+  if (!canUploadOperationalDocument(actor, load)) throw new AuthorizationError();
 }
 
 /** A company's own record is readable/editable by its members (or staff). */

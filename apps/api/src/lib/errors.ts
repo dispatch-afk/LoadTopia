@@ -22,6 +22,11 @@ export const forbidden = (msg = "You do not have permission to perform this acti
   new AppError(403, "FORBIDDEN", msg);
 export const notFound = (msg = "Resource not found") => new AppError(404, "NOT_FOUND", msg);
 export const conflict = (msg: string) => new AppError(409, "CONFLICT", msg);
+/** A storage-dependent action could not complete because object storage is
+ *  unreachable. Never carries a bucket name, endpoint, or provider internals. */
+export const storageUnavailable = (
+  msg = "Document storage is temporarily unavailable. Try again shortly.",
+) => new AppError(503, "STORAGE_UNAVAILABLE", msg);
 
 const DOMAIN_ERROR_CODES = new Set([
   "FORBIDDEN",

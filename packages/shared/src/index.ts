@@ -7,6 +7,7 @@ export * from "./schemas/location";
 export * from "./schemas/equipment";
 export * from "./schemas/load";
 export * from "./schemas/check-in";
+export * from "./schemas/document";
 export * from "./schemas/carrier-profile";
 export * from "./schemas/offer";
 export * from "./schemas/marketplace";

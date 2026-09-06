@@ -40,6 +40,12 @@ const EnvSchema = z.object({
   MARKETPLACE_WRITE_RATE_LIMIT_WINDOW: z.string().default("1 minute"),
   MARKETPLACE_AWARD_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(15),
   MARKETPLACE_AWARD_RATE_LIMIT_WINDOW: z.string().default("1 minute"),
+  // Operational-document upload requests cost object storage per call, so they
+  // get a dedicated limit (Rev. 2 Correction 12) — generous, mirroring the
+  // marketplace write default so a dispatcher uploading several BOL/POD files
+  // across loads is never throttled.
+  DOCUMENT_UPLOAD_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
+  DOCUMENT_UPLOAD_RATE_LIMIT_WINDOW: z.string().default("1 minute"),
 
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
