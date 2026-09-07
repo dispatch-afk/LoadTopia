@@ -641,9 +641,12 @@ model PricingSnapshot {
 // Operations (Milestone 3) — post-award shipment lifecycle
 // ---------------------------------------------------------------------------
 
-/// Manual carrier location/status check-ins (tracking Level B). Append-only.
-/// First-party operational data — NOT provider-abstracted; TrackingProvider
-/// stays reserved for a future automated-telematics milestone.
+/// Manual carrier location/status check-ins (tracking Level B). APPEND-ONLY at
+/// the database level (loadtopia_reject_mutation trigger, migration
+/// 20260907120000) — INSERT only; UPDATE/DELETE rejected by PostgreSQL, like
+/// load_events / document_reviews. First-party operational data — NOT
+/// provider-abstracted; TrackingProvider stays reserved for a future
+/// automated-telematics milestone.
 model LoadCheckIn {
   id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   loadId      String   @map("load_id") @db.Uuid

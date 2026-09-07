@@ -402,6 +402,43 @@ suite("manual check-ins (integration)", () => {
     }
   });
 
+  it("load_check_ins is append-only at the DATABASE level (UPDATE and DELETE rejected by PostgreSQL)", async () => {
+    const s = await shipper();
+    const c = await carrier();
+    const loadId = await assignedLoad(s, c);
+
+    // 1. INSERT via the API succeeds
+    const created = await postCheckIn(c.cookie, loadId, { ...CHI, note: "at the dock" });
+    expect(created.statusCode).toBe(201);
+    const id: string = created.json().id;
+
+    // 2. UPDATE is rejected by the database trigger
+    await expect(
+      prisma.loadCheckIn.update({ where: { id }, data: { city: "Tampered" } }),
+    ).rejects.toThrow();
+
+    // 3. DELETE is rejected by the database trigger
+    await expect(prisma.loadCheckIn.delete({ where: { id } })).rejects.toThrow();
+
+    // the row and its content are unchanged
+    const row = await prisma.loadCheckIn.findUniqueOrThrow({ where: { id } });
+    expect(row.city).toBe("Chicago");
+    expect(row.note).toBe("at the dock");
+
+    // 4. a normal POST /loads/:id/check-ins still succeeds
+    const again = await postCheckIn(c.cookie, loadId, { ...CHI, note: "rolling" });
+    expect(again.statusCode).toBe(201);
+
+    // 5. read / history behaviour is unchanged
+    const history = await getCheckIns(c.cookie, loadId);
+    expect(history.statusCode).toBe(200);
+    expect(history.json().data).toHaveLength(2);
+    expect(history.json().data.map((x: { note: string | null }) => x.note)).toEqual([
+      "at the dock",
+      "rolling",
+    ]);
+  });
+
   // ── independence: storage / Rate Confirmation / routing / pricing ──
 
   it("a check-in does not touch the Rate Confirmation, routing provenance, or pricing snapshots", async () => {
