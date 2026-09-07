@@ -597,4 +597,102 @@ suite("shipment operational lifecycle (integration)", () => {
     expect(delivered.json().deliveredAt).toBeTruthy();
     expect(delivered.json().completedAt).toBeNull();
   });
+
+  // ── dormant OFFER_RECEIVED / AWARDED → POSTED edge (Slice 8 closeout) ──
+
+  /** post → offer (load is now OFFER_RECEIVED, one ACTIVE thread). */
+  async function offerReceivedLoad(s: ShipperFx, c: Session): Promise<string> {
+    const loadId = await postedLoad(s);
+    const offer = await api.inject(
+      authed(c.cookie, {
+        method: "POST",
+        url: `/api/marketplace/loads/${loadId}/offers`,
+        payload: { amount: "1850.00", currency: "USD" },
+      }),
+    );
+    if (offer.statusCode !== 201) throw new Error(`offer ${offer.statusCode}: ${offer.body}`);
+    return loadId;
+  }
+
+  /** post → offer → accept, but NOT assign (load is AWARDED). */
+  async function awardedLoad(s: ShipperFx, c: Session): Promise<string> {
+    const loadId = await offerReceivedLoad(s, c);
+    const thread = await api.inject(
+      authed(s.cookie, { method: "GET", url: `/api/loads/${loadId}/offers` }),
+    );
+    const threadId = thread.json().data[0].threadId;
+    const full = await api.inject(
+      authed(s.cookie, { method: "GET", url: `/api/offers/threads/${threadId}` }),
+    );
+    const roundId = full.json().rounds[0].id;
+    const accept = await api.inject(
+      authed(s.cookie, { method: "POST", url: `/api/offers/rounds/${roundId}/accept` }),
+    );
+    if (accept.statusCode !== 200) throw new Error(`accept ${accept.statusCode}: ${accept.body}`);
+    return loadId;
+  }
+
+  it("the shipper cannot re-post an AWARDED load via /post — award state is untouched", async () => {
+    const s = await shipper();
+    const c = await carrier();
+    const loadId = await awardedLoad(s, c);
+
+    const before = await prisma.load.findUniqueOrThrow({ where: { id: loadId } });
+    const eventsBefore = await prisma.loadEvent.count({ where: { loadId } });
+
+    const res = await api.inject(
+      authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/post` }),
+    );
+    expect(res.statusCode).toBe(409);
+
+    const after = await prisma.load.findUniqueOrThrow({ where: { id: loadId } });
+    expect(after.status).toBe("AWARDED");
+    expect(after.carrierCompanyId).toBe(before.carrierCompanyId);
+    expect(after.awardedOfferRoundId).toBe(before.awardedOfferRoundId);
+    expect(after.bookedRate?.toString()).toBe(before.bookedRate?.toString());
+    expect(after.awardedAt?.toISOString()).toBe(before.awardedAt?.toISOString());
+    expect(after.postedAt?.toISOString()).toBe(before.postedAt?.toISOString());
+
+    const threads = await prisma.offerThread.findMany({ where: { loadId } });
+    expect(threads.map((t) => t.status)).toEqual(["ACCEPTED"]);
+
+    // the failed /post wrote no event at all — the only STATUS_CHANGED → POSTED
+    // on this load is the original DRAFT → POSTED from the fixture
+    expect(await prisma.loadEvent.count({ where: { loadId } })).toBe(eventsBefore);
+    const posts = await prisma.loadEvent.findMany({
+      where: { loadId, type: "STATUS_CHANGED", toStatus: "POSTED" },
+    });
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.fromStatus).toBe("DRAFT");
+  });
+
+  it("the shipper cannot re-post an OFFER_RECEIVED load via /post", async () => {
+    const s = await shipper();
+    const c = await carrier();
+    const loadId = await offerReceivedLoad(s, c);
+
+    const res = await api.inject(
+      authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/post` }),
+    );
+    expect(res.statusCode).toBe(409);
+    const after = await prisma.load.findUniqueOrThrow({ where: { id: loadId } });
+    expect(after.status).toBe("OFFER_RECEIVED");
+  });
+
+  it("POSTED is not advertised in availableTransitions for OFFER_RECEIVED or AWARDED", async () => {
+    const s = await shipper();
+    const c = await carrier();
+
+    const orId = await offerReceivedLoad(s, c);
+    const orView = await api.inject(authed(s.cookie, { method: "GET", url: `/api/loads/${orId}` }));
+    expect(orView.json().status).toBe("OFFER_RECEIVED");
+    expect(orView.json().availableTransitions).not.toContain("POSTED");
+
+    const awId = await awardedLoad(s, c);
+    const awView = await api.inject(authed(s.cookie, { method: "GET", url: `/api/loads/${awId}` }));
+    expect(awView.json().status).toBe("AWARDED");
+    expect(awView.json().availableTransitions).not.toContain("POSTED");
+    // the real AWARDED action is still there
+    expect(awView.json().availableTransitions).toContain("CARRIER_ASSIGNED");
+  });
 });

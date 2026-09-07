@@ -90,10 +90,10 @@ function toEventView(e: LoadDetailRow["events"][number]): LoadEventView {
 
 /**
  * The party that can drive a given load transition through an API endpoint.
- * A `(from, to)` pair not listed here has no direct load endpoint — either it
- * flows from the offer/marketplace surface (e.g. `POSTED → AWARDED`) or it is
- * the dormant `AWARDED → POSTED` — and is left in `availableTransitions`
- * unchanged for every reader (Slice 6A does not touch that behaviour).
+ * A `(from, to)` pair not listed here has no direct load endpoint — it flows
+ * from the offer/marketplace surface (e.g. `POSTED → AWARDED`). The reserved
+ * `OFFER_RECEIVED/AWARDED → POSTED` edge is filtered out entirely by the caller
+ * (Slice 8 closeout — `/post` is DRAFT-only), so it never reaches this map.
  */
 function transitionActor(from: LoadStatus, to: LoadStatus): "shipper" | "carrier" | null {
   if (to === LoadStatus.CANCELLED) return "shipper"; // POST /loads/:id/cancel
@@ -117,6 +117,15 @@ export function toLoadView(l: LoadDetailRow, viewerRole: LoadViewerRole): LoadVi
   const availableTransitions = nextLoadStatuses(l.status)
     .filter((s) => EXPOSED_LOAD_STATUSES.includes(s))
     .filter((s) => {
+      // The reserved OFFER_RECEIVED/AWARDED → POSTED domain edge has no endpoint
+      // and no product behind it (`/post` is DRAFT-only). Never advertise it —
+      // to any reader (Slice 8 closeout). The domain map is unchanged.
+      if (
+        s === LoadStatus.POSTED &&
+        (l.status === LoadStatus.OFFER_RECEIVED || l.status === LoadStatus.AWARDED)
+      ) {
+        return false;
+      }
       const owner = transitionActor(l.status, s);
       if (owner !== null && viewerRole !== "admin" && owner !== viewerRole) return false;
       if (s === LoadStatus.COMPLETED) return completionReady;

@@ -327,6 +327,18 @@ export class LoadsService {
       await tx.$executeRaw`SELECT 1 FROM loads WHERE id = ${id}::uuid FOR UPDATE`;
       const fresh = await tx.load.findUniqueOrThrow({ where: { id } });
 
+      // `/post` is exclusively the DRAFT → POSTED intent. The load state machine
+      // also defines OFFER_RECEIVED/AWARDED → POSTED — a reserved "un-post" /
+      // "un-award" edge with no product behind it and no other caller — and
+      // `assertPostReadiness` below is a field-completeness check, not a status
+      // guard. Without this line a shipper could `/post` an awarded load back to
+      // the board, stranding its award columns and its ACCEPTED offer thread.
+      // The domain transition map is deliberately left untouched (Slice 8
+      // closeout); this endpoint simply refuses to be that path.
+      if (fresh.status !== LoadStatus.DRAFT) {
+        throw conflict("Only a draft load can be posted to the marketplace.");
+      }
+
       assertLoadTransition(fresh.status, LoadStatus.POSTED);
       assertPostReadiness({
         status: fresh.status,
