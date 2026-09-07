@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
-import type { LoadStatus, LoadView } from "@loadtopia/shared";
+import type { LoadStatus, LoadView, MeResponse } from "@loadtopia/shared";
 import {
+  LOAD_EVENT_LABELS,
   canCompleteShipment,
+  canRecordCheckIn,
+  canReviewPod,
+  canUploadDocument,
   carrierMovementAction,
   completionBlockedReason,
+  formatFileSize,
   formatReportedCoordinates,
   shipmentProgress,
   shouldShowOperations,
+  uploaderLabel,
+  viewerRoleForLoad,
 } from "./operations";
 
 function loadView(overrides: Partial<LoadView> = {}): LoadView {
@@ -231,4 +238,83 @@ describe("formatReportedCoordinates", () => {
     expect(formatReportedCoordinates(null, "-87.6")).toBeNull();
     expect(formatReportedCoordinates("41.8", null)).toBeNull();
   });
+});
+
+function me(overrides: Partial<MeResponse> = {}): MeResponse {
+  return {
+    user: { id: "u-1", email: "a@b.c", firstName: "A", lastName: "B", createdAt: "" },
+    memberships: [],
+    activeCompanyId: "co-carrier",
+    role: "CARRIER",
+    permissions: ["shipment:operate:assigned", "marketplace:browse"],
+    ...overrides,
+  };
+}
+
+const shipperMe = () =>
+  me({ activeCompanyId: "co-shipper", role: "SHIPPER", permissions: ["load:update:own", "load:read:own"] });
+
+describe("viewerRoleForLoad (mirrors the API's loadViewerRole)", () => {
+  it("classifies shipper / carrier / admin / other", () => {
+    expect(viewerRoleForLoad(shipperMe(), loadView())).toBe("shipper");
+    expect(viewerRoleForLoad(me(), loadView())).toBe("carrier");
+    expect(viewerRoleForLoad(me({ role: "ADMIN", activeCompanyId: null }), loadView())).toBe("admin");
+    expect(viewerRoleForLoad(me({ activeCompanyId: "co-other" }), loadView())).toBe("other");
+  });
+});
+
+describe("action gating helpers (backend re-enforces regardless)", () => {
+  it("canRecordCheckIn: assigned carrier in window only", () => {
+    expect(canRecordCheckIn(me(), loadView({ status: "IN_TRANSIT" }))).toBe(true);
+    // shipper never
+    expect(canRecordCheckIn(shipperMe(), loadView({ status: "IN_TRANSIT" }))).toBe(false);
+    // out of window
+    expect(canRecordCheckIn(me(), loadView({ status: "COMPLETED" }))).toBe(false);
+    // missing permission
+    expect(canRecordCheckIn(me({ permissions: [] }), loadView({ status: "IN_TRANSIT" }))).toBe(false);
+  });
+
+  it("canUploadDocument: shipper or assigned carrier, only in the activity window", () => {
+    expect(canUploadDocument(shipperMe(), loadView({ status: "CARRIER_ASSIGNED" }))).toBe(true);
+    expect(canUploadDocument(me(), loadView({ status: "DELIVERED" }))).toBe(true);
+    expect(canUploadDocument(me(), loadView({ status: "AWARDED" }))).toBe(false);
+    expect(canUploadDocument(me(), loadView({ status: "COMPLETED" }))).toBe(false);
+    expect(canUploadDocument(me({ activeCompanyId: "co-other" }), loadView({ status: "DELIVERED" }))).toBe(
+      false,
+    );
+  });
+
+  it("canReviewPod: owning shipper only", () => {
+    expect(canReviewPod(shipperMe(), loadView({ status: "DELIVERED" }))).toBe(true);
+    expect(canReviewPod(me(), loadView({ status: "DELIVERED" }))).toBe(false);
+  });
+});
+
+describe("uploaderLabel / formatFileSize", () => {
+  it("labels the uploading party", () => {
+    expect(uploaderLabel("co-shipper", "co-shipper", "co-carrier")).toBe("Shipper");
+    expect(uploaderLabel("co-carrier", "co-shipper", "co-carrier")).toBe("Your company");
+    expect(uploaderLabel("co-carrier", "co-shipper", "co-shipper")).toBe("Carrier");
+  });
+  it("formats sizes", () => {
+    expect(formatFileSize(null)).toBe("—");
+    expect(formatFileSize(512)).toBe("512 B");
+    expect(formatFileSize(2048)).toBe("2 KB");
+    expect(formatFileSize(3_500_000)).toBe("3.3 MB");
+  });
+});
+
+describe("LOAD_EVENT_LABELS covers the M3 event types (no raw JSON in the timeline)", () => {
+  for (const t of [
+    "CHECK_IN_ADDED",
+    "DOCUMENT_UPLOADED",
+    "DOCUMENT_REVIEWED",
+    "DOCUMENT_REMOVED",
+    "STATUS_CHANGED",
+  ]) {
+    it(`has a human label for ${t}`, () => {
+      expect(LOAD_EVENT_LABELS[t]).toBeTruthy();
+      expect(LOAD_EVENT_LABELS[t]).not.toMatch(/[_{}]/);
+    });
+  }
 });

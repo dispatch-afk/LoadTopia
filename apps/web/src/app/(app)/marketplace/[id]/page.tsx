@@ -13,6 +13,7 @@ import { CreateOfferForm } from "@/components/create-offer-form";
 import { ShipmentProgress } from "@/components/operations/shipment-progress";
 import { CheckInsPanel } from "@/components/operations/check-ins-panel";
 import { DocumentsPanel } from "@/components/operations/documents-panel";
+import { CarrierShipmentActions } from "@/components/operations/carrier-shipment-actions";
 import { RateConfirmationPanel } from "@/components/operations/rate-confirmation-panel";
 import { requireMe } from "@/lib/session";
 import {
@@ -20,6 +21,7 @@ import {
   canReviewPod,
   canUploadDocument,
   shouldShowOperations,
+  viewerRoleForLoad,
 } from "@/lib/operations";
 import { fetchCheckIns, fetchDocuments, fetchRateConfirmation } from "@/lib/operations-data";
 import { fmtDateTime, fmtMiles, fmtWeight, fmtWindow, titleCase } from "@/lib/format";
@@ -102,6 +104,8 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
       fetchRateConfirmation(id),
     ]);
     const award = load.marketplace.award;
+    const viewerRole = viewerRoleForLoad(me, load);
+    const showCarrierActions = viewerRole === "carrier" || viewerRole === "admin";
 
     return (
       <div>
@@ -180,6 +184,13 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
           </div>
 
           <div className="space-y-6">
+            {showCarrierActions && (
+              <Card className="p-5">
+                <h2 className="mb-3 text-sm font-semibold text-ink">Shipment actions</h2>
+                <CarrierShipmentActions load={load} />
+              </Card>
+            )}
+
             {award && (
               <Card className="p-5">
                 <h2 className="mb-2 text-sm font-semibold text-ink">Booking</h2>

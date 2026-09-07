@@ -16,6 +16,7 @@ import { ShipmentProgress } from "@/components/operations/shipment-progress";
 import { CheckInsPanel } from "@/components/operations/check-ins-panel";
 import { DocumentsPanel } from "@/components/operations/documents-panel";
 import { RateConfirmationPanel } from "@/components/operations/rate-confirmation-panel";
+import { ShipperCompleteAction } from "@/components/operations/shipper-complete-action";
 import { requireMe } from "@/lib/session";
 import {
   canRecordCheckIn,
@@ -23,6 +24,7 @@ import {
   canUploadDocument,
   LOAD_EVENT_LABELS,
   shouldShowOperations,
+  viewerRoleForLoad,
 } from "@/lib/operations";
 import { fetchCheckIns, fetchDocuments, fetchRateConfirmation } from "@/lib/operations-data";
 import {
@@ -94,6 +96,7 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
 
   const award = load.marketplace.award;
   const showOps = shouldShowOperations(load);
+  const viewerRole = viewerRoleForLoad(me, load);
 
   const [checkIns, documents, rateConfirmation] = showOps
     ? await Promise.all([fetchCheckIns(id), fetchDocuments(id), fetchRateConfirmation(id)])
@@ -274,7 +277,12 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
         <div className="space-y-6">
           <Card className="p-5">
             <h2 className="mb-3 text-sm font-semibold text-ink">Actions</h2>
-            <LoadActions load={load} />
+            <div className="space-y-3">
+              <LoadActions load={load} />
+              {showOps && (viewerRole === "shipper" || viewerRole === "admin") && (
+                <ShipperCompleteAction load={load} />
+              )}
+            </div>
           </Card>
 
           {showOps && rateConfirmation !== null && (
