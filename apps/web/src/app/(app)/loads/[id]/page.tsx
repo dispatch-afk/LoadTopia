@@ -12,6 +12,16 @@ import { LoadStatusBadge } from "@/components/load-status-badge";
 import { LoadActions } from "@/components/load-actions";
 import { OfferThread } from "@/components/offer-thread";
 import { AssignCarrierButton } from "@/components/assign-carrier-button";
+import { ShipmentProgress } from "@/components/operations/shipment-progress";
+import { CheckInsPanel } from "@/components/operations/check-ins-panel";
+import { RateConfirmationPanel } from "@/components/operations/rate-confirmation-panel";
+import { requireMe } from "@/lib/session";
+import {
+  canRecordCheckIn,
+  LOAD_EVENT_LABELS,
+  shouldShowOperations,
+} from "@/lib/operations";
+import { fetchCheckIns, fetchRateConfirmation } from "@/lib/operations-data";
 import {
   fmtDateTime,
   fmtDriveTime,
@@ -33,13 +43,6 @@ async function safe<T>(p: Promise<T>, fallback: T): Promise<T> {
   }
 }
 
-const EVENT_LABEL: Record<string, string> = {
-  CREATED: "Load created",
-  UPDATED: "Load edited",
-  STATUS_CHANGED: "Status changed",
-  CANCELLED: "Load cancelled",
-};
-
 function Detail({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div>
@@ -60,6 +63,7 @@ function Addr({ loc }: { loc: LoadView["origin"] }) {
 
 export default async function LoadDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const me = await requireMe();
   let load: LoadView;
   try {
     load = await apiServer<LoadView>(`/api/loads/${id}`);
@@ -86,6 +90,11 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
   );
 
   const award = load.marketplace.award;
+  const showOps = shouldShowOperations(load);
+
+  const [checkIns, rateConfirmation] = showOps
+    ? await Promise.all([fetchCheckIns(id), fetchRateConfirmation(id)])
+    : [[], null];
 
   return (
     <div>
@@ -100,6 +109,13 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
+          {showOps && (
+            <Card className="p-5">
+              <h2 className="mb-4 text-sm font-semibold text-ink">Shipment progress</h2>
+              <ShipmentProgress load={load} />
+            </Card>
+          )}
+
           <Card className="p-5">
             <h2 className="mb-4 text-sm font-semibold text-ink">Load details</h2>
             <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -131,6 +147,17 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
               </p>
             )}
           </Card>
+
+          {showOps && (
+            <Card className="p-5">
+              <h2 className="mb-4 text-sm font-semibold text-ink">Check-ins</h2>
+              <CheckInsPanel
+                loadId={load.id}
+                checkIns={checkIns}
+                canRecord={canRecordCheckIn(me, load)}
+              />
+            </Card>
+          )}
 
           {(threads.length > 0 || load.marketplace.onMarket || award) && (
             <Card className="p-5">
@@ -207,7 +234,7 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
                   <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-brand-400" />
                   <div>
                     <p className="text-ink">
-                      {EVENT_LABEL[e.type] ?? titleCase(e.type)}
+                      {LOAD_EVENT_LABELS[e.type] ?? titleCase(e.type)}
                       {e.fromStatus && e.toStatus && (
                         <span className="text-muted">
                           {" "}
@@ -232,6 +259,13 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
             <h2 className="mb-3 text-sm font-semibold text-ink">Actions</h2>
             <LoadActions load={load} />
           </Card>
+
+          {showOps && rateConfirmation !== null && (
+            <Card className="p-5">
+              <h2 className="mb-3 text-sm font-semibold text-ink">Rate Confirmation</h2>
+              <RateConfirmationPanel loadId={load.id} state={rateConfirmation} />
+            </Card>
+          )}
         </div>
       </div>
     </div>
