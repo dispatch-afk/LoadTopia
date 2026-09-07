@@ -229,6 +229,23 @@ export const POD_REVIEW_LABELS: Record<string, string> = {
   REJECTED: "Rejected",
 };
 
+export function formatFileSize(bytes: number | null): string {
+  if (bytes === null) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Which party's company uploaded a document, for display. */
+export function uploaderLabel(
+  uploadedByCompanyId: string,
+  shipperCompanyId: string,
+  activeCompanyId: string | null,
+): string {
+  if (activeCompanyId !== null && uploadedByCompanyId === activeCompanyId) return "Your company";
+  return uploadedByCompanyId === shipperCompanyId ? "Shipper" : "Carrier";
+}
+
 // --- Check-ins ----------------------------------------------------------
 
 /** Format reported coordinates for display. These are MANUALLY reported, never

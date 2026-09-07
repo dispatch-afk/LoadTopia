@@ -14,14 +14,17 @@ import { OfferThread } from "@/components/offer-thread";
 import { AssignCarrierButton } from "@/components/assign-carrier-button";
 import { ShipmentProgress } from "@/components/operations/shipment-progress";
 import { CheckInsPanel } from "@/components/operations/check-ins-panel";
+import { DocumentsPanel } from "@/components/operations/documents-panel";
 import { RateConfirmationPanel } from "@/components/operations/rate-confirmation-panel";
 import { requireMe } from "@/lib/session";
 import {
   canRecordCheckIn,
+  canReviewPod,
+  canUploadDocument,
   LOAD_EVENT_LABELS,
   shouldShowOperations,
 } from "@/lib/operations";
-import { fetchCheckIns, fetchRateConfirmation } from "@/lib/operations-data";
+import { fetchCheckIns, fetchDocuments, fetchRateConfirmation } from "@/lib/operations-data";
 import {
   fmtDateTime,
   fmtDriveTime,
@@ -92,9 +95,9 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
   const award = load.marketplace.award;
   const showOps = shouldShowOperations(load);
 
-  const [checkIns, rateConfirmation] = showOps
-    ? await Promise.all([fetchCheckIns(id), fetchRateConfirmation(id)])
-    : [[], null];
+  const [checkIns, documents, rateConfirmation] = showOps
+    ? await Promise.all([fetchCheckIns(id), fetchDocuments(id), fetchRateConfirmation(id)])
+    : [[], [], null];
 
   return (
     <div>
@@ -155,6 +158,20 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
                 loadId={load.id}
                 checkIns={checkIns}
                 canRecord={canRecordCheckIn(me, load)}
+              />
+            </Card>
+          )}
+
+          {showOps && (
+            <Card className="p-5">
+              <h2 className="mb-4 text-sm font-semibold text-ink">Documents</h2>
+              <DocumentsPanel
+                loadId={load.id}
+                documents={documents}
+                shipperCompanyId={load.shipperCompanyId}
+                activeCompanyId={me.activeCompanyId}
+                canUpload={canUploadDocument(me, load)}
+                canReview={canReviewPod(me, load)}
               />
             </Card>
           )}
