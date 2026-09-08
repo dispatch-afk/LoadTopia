@@ -1,17 +1,20 @@
 # LoadTopia — Architecture
 
 _Baseline: Phase 0. Milestone 1 additions: see [`MILESTONE-1.md`](MILESTONE-1.md).
-Milestone 2 (marketplace) additions: see [`MILESTONE-2.md`](MILESTONE-2.md)._
+Milestone 2 (marketplace): see [`MILESTONE-2.md`](MILESTONE-2.md). Milestone 3
+(operations): see [`MILESTONE-3.md`](MILESTONE-3.md)._
 
 This document explains the system design and the reasoning behind the significant
 technology choices. It is the reference for how the codebase is meant to grow.
 Milestone 1 (companies, membership-based authz + active-company context,
-locations, equipment, load CRUD + lifecycle + routing) and Milestone 2 (carrier
+locations, equipment, load CRUD + lifecycle + routing), Milestone 2 (carrier
 marketplace profiles + eligibility, load board, offers/counteroffers over an
 immutable round history, atomic load award, pricing snapshots, carrier
-verification abstraction) build on this foundation without changing it — details
-and the DB migrations are in [`MILESTONE-1.md`](MILESTONE-1.md) and
-[`MILESTONE-2.md`](MILESTONE-2.md).
+verification abstraction), and Milestone 3 (post-award operational lifecycle,
+manual check-ins, operational documents on private object storage, shipper POD
+review, immutable Rate Confirmation snapshot, operational frontend) build on this
+foundation without changing it — details and the DB migrations are in the
+per-milestone docs.
 
 ---
 
@@ -47,14 +50,14 @@ the authoritative source of a rule and its permission checks are cosmetic.
 
 A single repo with independently-scoped packages:
 
-| Package               | Responsibility                                                     |
-| --------------------- | ---------------------------------------------------------------- |
-| `@loadtopia/shared`   | Enums, zod schemas, DTO/wire types. Imported by both api and web. |
-| `@loadtopia/domain`   | Pure business logic: load state machine, RBAC permissions, resource policies. No I/O, no framework. Heavily unit-tested. |
-| `@loadtopia/db`       | Prisma schema, migrations, seed, and a `PrismaClient` singleton + health probe. |
-| `@loadtopia/providers`| External-service interfaces and their mock implementations + a registry/factory. |
-| `@loadtopia/api`      | Fastify HTTP layer: plugins, route modules, wiring. Thin — delegates to `domain`. |
-| `@loadtopia/web`      | Next.js App Router client.                                        |
+| Package                | Responsibility                                                                                                           |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `@loadtopia/shared`    | Enums, zod schemas, DTO/wire types. Imported by both api and web.                                                        |
+| `@loadtopia/domain`    | Pure business logic: load state machine, RBAC permissions, resource policies. No I/O, no framework. Heavily unit-tested. |
+| `@loadtopia/db`        | Prisma schema, migrations, seed, and a `PrismaClient` singleton + health probe.                                          |
+| `@loadtopia/providers` | External-service interfaces and their mock implementations + a registry/factory.                                         |
+| `@loadtopia/api`       | Fastify HTTP layer: plugins, route modules, wiring. Thin — delegates to `domain`.                                        |
+| `@loadtopia/web`       | Next.js App Router client.                                                                                               |
 
 **Why monorepo + a dedicated API service** (rather than one Next.js app with
 route handlers): LoadTopia's roadmap includes enterprise customers, third-party
@@ -102,13 +105,13 @@ adds `listen()` + graceful shutdown.
 
 **Plugin layers** (`src/plugins/`):
 
-| Plugin              | Provides                                                          |
-| ------------------- | -------------------------------------------------------------- |
-| `request-context`   | Per-request id (honours inbound `x-request-id`), response header, log binding. |
-| `prisma`            | `app.prisma` — injectable for tests; owns disconnect when it created the client. |
-| `providers`         | `app.providers` — the provider registry built from config; warns when mocks are active. |
-| `security`          | helmet, CORS allowlist, cookie parsing, global rate limit.       |
-| `auth`              | `app.authenticate` preHandler and `app.requirePermission(p)` factory. |
+| Plugin            | Provides                                                                                |
+| ----------------- | --------------------------------------------------------------------------------------- |
+| `request-context` | Per-request id (honours inbound `x-request-id`), response header, log binding.          |
+| `prisma`          | `app.prisma` — injectable for tests; owns disconnect when it created the client.        |
+| `providers`       | `app.providers` — the provider registry built from config; warns when mocks are active. |
+| `security`        | helmet, CORS allowlist, cookie parsing, global rate limit.                              |
+| `auth`            | `app.authenticate` preHandler and `app.requirePermission(p)` factory.                   |
 
 **Route modules** (`src/modules/<name>/`): each exports a Fastify plugin
 registering its routes; all are mounted under `/api`. Business logic sits in a
@@ -142,19 +145,29 @@ Conventions (enforced by review):
   `Cascade` for owned children, `SetNull` for optional actors).
 - **Indexes** on every FK used for lookup and on common query predicates
   (`loads(status)`, `loads(shipper_company_id, status)`, event time-ranges, …).
-- **Append-only tables**: `load_events`, `market_rates`, `audit_logs`. Application
-  code only ever `INSERT`s. This history is a core asset — never overwrite it.
+- **Append-only tables**: `load_events`, `market_rates`, `audit_logs`,
+  `offer_rounds`, `offer_events`, `pricing_snapshots`, `document_reviews`
+  (all with a DB trigger rejecting UPDATE/DELETE), and `rate_confirmations`
+  (commercial columns immutable by trigger; DELETE blocked; only three
+  generation-metadata columns updatable). `load_check_ins` is append-only by
+  API surface (no mutation path) but has no dedicated trigger. Application code
+  only ever `INSERT`s this history — it is a core asset.
 
-### Entities in Phase 0
+### Entities
 
-`companies`, `users`, `company_users` (membership + role), `sessions`,
-`locations`, `equipment`, `lanes`, `market_rates`, `loads`, `load_events`,
-`load_offers`, `audit_logs`.
+- **Phase 0 / M1**: `companies`, `users`, `company_users`, `sessions`,
+  `locations`, `equipment`, `lanes`, `market_rates`, `loads`, `load_events`,
+  `audit_logs`.
+- **M2 (marketplace)**: `carrier_profiles`, `offer_threads`, `offer_rounds`,
+  `offer_events`, `pricing_snapshots`.
+- **M3 (operations)**: `load_check_ins`, `load_documents`, `document_reviews`,
+  `rate_confirmations`; `loads` gains `picked_up_at` / `delivered_at` /
+  `completed_at`; `load_events` gains `actor_company_id`.
 
-Designed so that the deferred entities (`carrier_profiles`, `documents`,
-`tracking_events`, `payments`, `payouts`, `invoices`, `disputes`, `api_keys`,
-`integrations`, `saved_searches`, `pricing_snapshots`, `lane_statistics`,
-`subscriptions`, …) attach via new tables and FKs without reshaping the core.
+Still deferred (attach via new tables + FKs without reshaping the core):
+`tracking_events` / `carrier_locations`, `payments`, `payouts`, `invoices`,
+`disputes`, `api_keys`, `integrations`, `saved_searches`, `lane_statistics`,
+`subscriptions`.
 
 ### Migrations
 
@@ -178,7 +191,7 @@ verified against a real database.
   timing signals.
 - **Why not Auth.js / Clerk / Auth0**: identity data ownership. LoadTopia's
   auth lives in its own API and database. External identity providers can be
-  added later as federated login *options*, not as the system of record.
+  added later as federated login _options_, not as the system of record.
 
 Future: `api_keys` table for `API_CLIENT`, optional TOTP MFA, SSO for enterprise.
 
@@ -216,14 +229,29 @@ DRAFT → POSTED → OFFER_RECEIVED → AWARDED → CARRIER_ASSIGNED
       → PICKED_UP → IN_TRANSIT → DELIVERED → COMPLETED
 ```
 
+- All ten statuses are exposed (`EXPOSED_LOAD_STATUSES`). Milestone 3 made
+  `PICKED_UP … COMPLETED` live.
 - `CANCELLED` is reachable from any state **before** the freight is in motion
-  (`DRAFT`…`CARRIER_ASSIGNED`). Once `PICKED_UP`, cancellation requires a
-  dedicated exception/dispute flow (later milestone).
+  (`DRAFT`…`CARRIER_ASSIGNED`). Once `PICKED_UP`, cancellation would require a
+  dedicated exception/dispute flow — **not built** (a later milestone; the
+  `EXCEPTION_REPORTED` enum value is reserved schema headroom only).
 - `COMPLETED` and `CANCELLED` are terminal.
 - The backend routes every status change through `assertLoadTransition(from,to)`
-  and, in the same DB transaction, writes an **immutable `load_events` row**.
+  and `atomicLoadTransition()` (compare-and-set `where status = from`) and, in
+  the same DB transaction, writes an **immutable `load_events` row** (carrying
+  `actor_company_id` since M3, so carrier- and shipper-authored events are
+  distinguishable).
 - The client can never set `status` directly — it expresses intent via specific
-  endpoints (post, award, assign, …) that the API validates.
+  endpoints (`/post`, `/assign`, `/pickup`, `/in-transit`, `/deliver`,
+  `/complete`, `/cancel`) that the API validates. Carrier movement endpoints are
+  authorized by `canOperateShipment` (assigned carrier company only);
+  `/complete` is shipper-only and additionally gated by an active **approved
+  POD**. `/post` is DRAFT-only.
+- `availableTransitions` in `LoadView` is **actor-aware** — filtered to the
+  transitions the requesting viewer could actually trigger — and never advertises
+  the reserved `OFFER_RECEIVED/AWARDED → POSTED` domain edge (which has no
+  endpoint). `completionReady` is the separate objective "an approved POD
+  exists" fact.
 
 ---
 
@@ -232,15 +260,15 @@ DRAFT → POSTED → OFFER_RECEIVED → AWARDED → CARRIER_ASSIGNED
 Every external dependency is an interface here; application code imports only the
 interface. Each response carries provenance: `{ provider, isMock, retrievedAt, metadata }`.
 
-| Interface              | Mock impl (default)     | Real impl                                    |
-| ---------------------- | ------------------------ | -------------------------------------------- |
-| `RoutingProvider`      | `MockRoutingProvider`   | `GoogleRoutingProvider` (Routes API, `travelMode: DRIVE`) |
-| `PricingProvider`      | `MockPricingProvider`   | DAT, Truckstop, `LoadTopiaPricingProvider`  |
-| `GeocodingProvider`    | `MockGeocodingProvider` | `GoogleGeocodingProvider` (Geocoding API)    |
-| `PaymentProvider`      | `MockPaymentProvider`   | Stripe, Adyen, a factoring partner          |
-| `StorageProvider`      | `MockStorageProvider`   | AWS S3, GCS                                 |
-| `NotificationProvider` | `MockNotificationProvider` | Postmark/SES (email), Twilio (SMS)       |
-| `TrackingProvider`     | `MockTrackingProvider`  | project44, FourKites, ELD integrations      |
+| Interface              | Mock impl (default)                                                    | Real impl                                                                                             |
+| ---------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `RoutingProvider`      | `MockRoutingProvider`                                                  | `GoogleRoutingProvider` (Routes API, `travelMode: DRIVE`)                                             |
+| `PricingProvider`      | `MockPricingProvider`                                                  | DAT, Truckstop, `LoadTopiaPricingProvider` _(not built — still mock)_                                 |
+| `GeocodingProvider`    | `MockGeocodingProvider`                                                | `GoogleGeocodingProvider` (Geocoding API)                                                             |
+| `PaymentProvider`      | `MockPaymentProvider`                                                  | Stripe, Adyen, a factoring partner _(not built)_                                                      |
+| `StorageProvider`      | `MockStorageProvider` (non-functional) / `FakeStorageProvider` (tests) | **`S3StorageProvider`** — private S3-compatible bucket, presigned POST uploads (built, M3)            |
+| `NotificationProvider` | `MockNotificationProvider`                                             | Postmark/SES (email), Twilio (SMS) _(not built — still mock)_                                         |
+| `TrackingProvider`     | `MockTrackingProvider`                                                 | project44, FourKites, ELD integrations _(not built; M3 check-ins are manual, not via this interface)_ |
 
 Rules:
 
@@ -277,17 +305,53 @@ never read by `apps/web` and never reaches the browser.
 - **Local dev / CI**: leave unset — both providers default to `mock`.
 - A routing failure never blocks creating or saving a load/location. It does
   block **posting**: if the configured routing provider is real (`isMock:
-  false`) and a load has no computed distance, `POST /api/loads/:id/post`
+false`) and a load has no computed distance, `POST /api/loads/:id/post`
   returns 409 rather than letting the marketplace post with a `MockPricingProvider`
   fallback to a fully synthetic lane distance as if routing had succeeded.
 
 ### Pricing (strategic)
 
-`PricingProvider` is intentionally minimal now. The eventual
-`LoadTopiaPricingProvider` will blend external market data with LoadTopia's own
-transaction history, lane statistics, equipment, distance, capacity signals,
-seasonality, carrier acceptance rates, and time-to-cover — which is why
-`market_rates` is append-only from day one.
+`PricingProvider` is intentionally minimal now — **still `[MOCK]` only**. The
+eventual `LoadTopiaPricingProvider` will blend external market data with
+LoadTopia's own transaction history, lane statistics, equipment, distance,
+capacity signals, seasonality, carrier acceptance rates, and time-to-cover —
+which is why `market_rates` is append-only from day one.
+
+### Object storage (`StorageProvider`, Milestone 3)
+
+Operational documents (BOL / POD / OTHER) and the rendered Rate Confirmation PDF
+live in a **private, non-public** S3-compatible bucket. The interface is
+`createSignedUpload` / `createSignedDownload` / `headObject` / `putObject`.
+
+- **`MockStorageProvider`** (default `STORAGE_PROVIDER=mock`) is deliberately
+  **non-functional** — signed URLs resolve nowhere, `headObject` always returns
+  `null`, nothing is stored. It exists only for local dev where storage is
+  irrelevant. Anything that needs working uploads must select a real provider.
+- **`FakeStorageProvider`** is an in-process, byte-storing stand-in used by the
+  integration tests (`simulateUpload`, `simulateOutage`). Never registered.
+- **`S3StorageProvider`** (`STORAGE_PROVIDER=s3`) is the real adapter (AWS S3,
+  Cloudflare R2, MinIO, DigitalOcean Spaces). Uploads use a **presigned POST**
+  (the only mechanism that enforces `content-length-range` and an exact
+  `Content-Type` at the storage layer); downloads are short-lived presigned
+  GETs. Persistent credentials live only in the API process and are never read
+  by `apps/web`, never returned by `/api/health`, never logged.
+- `STORAGE_PROVIDER=s3` with any of `STORAGE_S3_REGION`, `STORAGE_S3_BUCKET`,
+  `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY` missing **fails
+  process startup** (`resolveS3StorageConfig` throws, mirroring the Google key
+  check). There is **no fallback to `MockStorageProvider`**.
+- Object keys are always **server-generated**
+  (`loads/{loadId}/documents/{documentId}`,
+  `rate-confirmations/{loadId}/{rateConfirmationId}.pdf`) and re-validated by
+  `assertSafeObjectKey`; the browser never constructs one.
+- Production packaging: the AWS SDK v3 (`@aws-sdk/client-s3`,
+  `@aws-sdk/s3-presigned-post`, `@aws-sdk/s3-request-presigner`) is kept
+  **external** from the `tsup` bundle (large, does dynamic `require()`) and is
+  declared as a direct dependency of **both** `@loadtopia/providers` and
+  `@loadtopia/api`, so `pnpm --filter=@loadtopia/api deploy --prod` prunes it
+  into the production `node_modules` at top level (the bundled provider code
+  resolves it there). Verified: the pruned artifact boots with
+  `STORAGE_PROVIDER=s3` and constructs `S3StorageProvider` with no
+  `MODULE_NOT_FOUND`.
 
 ---
 
@@ -295,14 +359,14 @@ seasonality, carrier acceptance rates, and time-to-cover — which is why
 
 Vitest. Layers:
 
-| Layer               | Where                                   | Needs a DB? |
-| ------------------- | -------------------------------------- | ----------- |
-| Unit (domain)       | `packages/domain/**/*.test.ts`         | no          |
-| Unit (providers)    | `packages/providers/**/*.test.ts`      | no          |
-| Unit (shared)       | `packages/shared/**/*.test.ts`         | no          |
-| Config              | `apps/api/src/__tests__/env.test.ts`   | no          |
-| API (inject)        | `apps/api/src/__tests__/*.test.ts`     | no (fake Prisma) |
-| Integration (E2E)   | `apps/api/src/__tests__/*.integration.test.ts` | **yes** (`TEST_DATABASE_URL`) |
+| Layer             | Where                                          | Needs a DB?                   |
+| ----------------- | ---------------------------------------------- | ----------------------------- |
+| Unit (domain)     | `packages/domain/**/*.test.ts`                 | no                            |
+| Unit (providers)  | `packages/providers/**/*.test.ts`              | no                            |
+| Unit (shared)     | `packages/shared/**/*.test.ts`                 | no                            |
+| Config            | `apps/api/src/__tests__/env.test.ts`           | no                            |
+| API (inject)      | `apps/api/src/__tests__/*.test.ts`             | no (fake Prisma)              |
+| Integration (E2E) | `apps/api/src/__tests__/*.integration.test.ts` | **yes** (`TEST_DATABASE_URL`) |
 
 `pnpm test` runs everything that needs no external services (safe on any
 machine, in any CI). `pnpm test:integration` runs the DB-backed suite and is
@@ -337,6 +401,45 @@ variables; `.env` is never committed. Production requires
   runtime lock-in to any single PaaS, and no dependency on Replit.
 - Secrets come from the platform's secret manager (AWS Secrets Manager / SSM),
   injected as environment variables.
+
+### Milestone 3 — production object storage
+
+Operational documents require a real, private S3-compatible bucket. Set on the
+API service:
+
+| Variable                                                    | Notes                                                                                       |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `STORAGE_PROVIDER=s3`                                       | selects `S3StorageProvider`; missing S3 config → boot failure                               |
+| `STORAGE_S3_REGION`                                         | required                                                                                    |
+| `STORAGE_S3_BUCKET`                                         | required; a **private** bucket (no public read)                                             |
+| `STORAGE_S3_ACCESS_KEY_ID` / `STORAGE_S3_SECRET_ACCESS_KEY` | required; IAM principal scoped to this bucket only (`GetObject`, `PutObject`, `HeadObject`) |
+| `STORAGE_S3_ENDPOINT`                                       | omit for AWS S3; set for R2 / MinIO / Spaces                                                |
+| `STORAGE_S3_FORCE_PATH_STYLE`                               | `true` for MinIO / some R2 setups                                                           |
+| `STORAGE_SIGNED_URL_TTL_SECONDS`                            | 60–3600, default 900 (15 min)                                                               |
+
+**Bucket CORS** — the browser uploads directly to the bucket (presigned POST)
+and follows presigned GET links, so the bucket must allow the **web app origin**
+(the Vercel/production URL that serves `apps/web`, e.g.
+`https://app.loadtopia.com`) — not `*`:
+
+```jsonc
+[
+  {
+    "AllowedOrigins": ["https://<web-app-origin>"],
+    "AllowedMethods": ["POST", "GET"], // POST = presigned upload; GET = download
+    "AllowedHeaders": ["*"], // presigned POST sends multipart form fields, not custom headers
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3000,
+  },
+]
+```
+
+- `PUT` is only needed if a provider path returns `method: "PUT"` (the mock
+  dev provider); the real `S3StorageProvider` uses `POST` exclusively, so a
+  production bucket needs `POST` + `GET` only.
+- The API never proxies file bytes; it only issues signed instructions.
+- This bucket is operator-provisioned. Do not commit bucket names, keys, or a
+  `render.yaml`/Terraform with real values.
 
 ---
 

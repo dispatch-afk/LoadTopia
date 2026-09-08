@@ -9,12 +9,14 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { writeAudit } from "../../lib/audit";
 import { assertResourceScope } from "../../lib/scoped-resource";
+import { RateConfirmationService } from "../rate-confirmations/rate-confirmation.service";
 import { LoadsService } from "./loads.service";
 
 const idParam = z.object({ id: uuidSchema });
 
 export async function loadsRoutes(app: FastifyInstance): Promise<void> {
   const service = new LoadsService(app.prisma, app.providers, app.log);
+  const rateConfirmations = new RateConfirmationService(app.prisma, app.providers.storage, app.log);
 
   app.post("/loads", { preHandler: [app.requireActiveCompany] }, async (request, reply) => {
     const actor = request.currentUser!;
@@ -112,6 +114,90 @@ export async function loadsRoutes(app: FastifyInstance): Promise<void> {
     });
     return load;
   });
+
+  // Milestone 3: carrier operational lifecycle. Explicit action endpoints (no
+  // generic status PATCH). Gated by the SHIPMENT_OPERATE_ASSIGNED permission in
+  // the preHandler, then by canOperateShipment() against THIS load's carrier
+  // company in the service (404 for readers who cannot see the load, 403 for a
+  // reader who is not the assigned carrier, e.g. the shipper). COMPLETE is
+  // deliberately NOT exposed here — it gates on approved-POD readiness.
+  const operateShipment = {
+    preHandler: [app.requireCompanyPermission("shipment:operate:assigned")],
+  };
+
+  app.post("/loads/:id/pickup", operateShipment, async (request) => {
+    const actor = request.currentUser!;
+    const { id } = idParam.parse(request.params);
+    const load = await service.pickup(actor, id);
+    await writeAudit(app.prisma, request, {
+      actorUserId: actor.userId,
+      action: "load.pickup",
+      entityType: "load",
+      entityId: id,
+    });
+    return load;
+  });
+
+  app.post("/loads/:id/in-transit", operateShipment, async (request) => {
+    const actor = request.currentUser!;
+    const { id } = idParam.parse(request.params);
+    const load = await service.startTransit(actor, id);
+    await writeAudit(app.prisma, request, {
+      actorUserId: actor.userId,
+      action: "load.in_transit",
+      entityType: "load",
+      entityId: id,
+    });
+    return load;
+  });
+
+  app.post("/loads/:id/deliver", operateShipment, async (request) => {
+    const actor = request.currentUser!;
+    const { id } = idParam.parse(request.params);
+    const load = await service.deliver(actor, id);
+    await writeAudit(app.prisma, request, {
+      actorUserId: actor.userId,
+      action: "load.deliver",
+      entityType: "load",
+      entityId: id,
+    });
+    return load;
+  });
+
+  // DELIVERED -> COMPLETED. Shipper-owned (load:update:own, like /assign) —
+  // NOT the carrier-operation permission. Gated server-side by an approved,
+  // active POD (assertCompletionReadiness, a pure DB query inside the txn).
+  app.post(
+    "/loads/:id/complete",
+    { preHandler: [app.requireCompanyPermission("load:update:own")] },
+    async (request) => {
+      const actor = request.currentUser!;
+      const { id } = idParam.parse(request.params);
+      const load = await service.complete(actor, id);
+      await writeAudit(app.prisma, request, {
+        actorUserId: actor.userId,
+        action: "load.complete",
+        entityType: "load",
+        entityId: id,
+      });
+      return load;
+    },
+  );
+
+  // Rate Confirmation (Milestone 3). Readable by the owning shipper, the
+  // assigned/winning carrier, and admin — everyone else 404s (IDOR-safe).
+  // Lazily completes generation if the rendered PDF is not ready yet; returns a
+  // stable RATE_CONFIRMATION_NOT_AVAILABLE for any load awarded before this
+  // feature shipped (no snapshot is ever fabricated).
+  app.get(
+    "/loads/:id/rate-confirmation",
+    { preHandler: [app.requireActiveCompany] },
+    async (request) => {
+      const actor = request.currentUser!;
+      const { id } = idParam.parse(request.params);
+      return rateConfirmations.getForLoad(actor, id);
+    },
+  );
 
   app.post("/loads/:id/cancel", { preHandler: [app.requireActiveCompany] }, async (request) => {
     const actor = request.currentUser!;

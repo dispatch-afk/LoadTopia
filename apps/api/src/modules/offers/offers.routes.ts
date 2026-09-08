@@ -10,6 +10,7 @@ import {
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { writeAudit } from "../../lib/audit";
+import { RateConfirmationService } from "../rate-confirmations/rate-confirmation.service";
 import { OffersService } from "./offers.service";
 
 const loadIdParam = z.object({ id: uuidSchema });
@@ -30,7 +31,8 @@ const loadIdParam = z.object({ id: uuidSchema });
  * scope (in the service, IDOR-safe 404) → validate body → execute.
  */
 export async function offersRoutes(app: FastifyInstance): Promise<void> {
-  const service = new OffersService(app.prisma);
+  const rateConfirmations = new RateConfirmationService(app.prisma, app.providers.storage, app.log);
+  const service = new OffersService(app.prisma, rateConfirmations);
 
   const writeLimit = {
     rateLimit: {

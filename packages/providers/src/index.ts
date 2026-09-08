@@ -14,3 +14,16 @@ export { MOCK_DISCLAIMER, MOCK_PROVIDER_NAME, MOCK_VERIFICATION_DISCLAIMER } fro
 export { GoogleGeocodingProvider } from "./google/google-geocoding-provider";
 export { GoogleRoutingProvider } from "./google/google-routing-provider";
 export { GoogleProviderError, resolveApiKey } from "./google/shared";
+export { S3StorageProvider, type S3StorageProviderOptions } from "./s3/s3-storage-provider";
+export {
+  assertSafeObjectKey,
+  resolveS3StorageConfig,
+  sanitizeStorageError,
+  StorageProviderError,
+  type PartialS3StorageConfig,
+  type S3StorageConfig,
+} from "./s3/shared";
+export {
+  FakeStorageProvider,
+  type FakeStorageProviderOptions,
+} from "./testing/fake-storage-provider";

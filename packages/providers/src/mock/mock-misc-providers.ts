@@ -12,9 +12,11 @@ import type {
   PostalAddress,
   ProviderHealth,
   ProviderProvenance,
+  PutObjectRequest,
   SignedUploadRequest,
   SignedUploadResult,
   StorageProvider,
+  StoredObjectMetadata,
   TrackingPosition,
   TrackingProvider,
   TrackingSubscriptionRequest,
@@ -71,7 +73,14 @@ export class MockPaymentProvider implements PaymentProvider {
   health = async () => okHealth("payment");
 }
 
-/** MockStorageProvider — DEVELOPMENT ONLY. Returns non-functional URLs. */
+/**
+ * MockStorageProvider — DEVELOPMENT ONLY, and deliberately NON-FUNCTIONAL:
+ * the URLs it returns resolve nowhere and it stores nothing. It exists only
+ * for "I don't care about storage right now" local dev. Anything that
+ * actually needs working uploads/downloads must select a real provider
+ * (`STORAGE_PROVIDER=s3`, e.g. a local MinIO); anything that needs controlled
+ * storage behavior in tests must use `FakeStorageProvider`.
+ */
 export class MockStorageProvider implements StorageProvider {
   readonly name = "mock";
   readonly isMock = true;
@@ -94,6 +103,16 @@ export class MockStorageProvider implements StorageProvider {
       expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
       ...mockProvenance(),
     };
+  }
+
+  /** Nothing is ever stored — so nothing can ever be confirmed. */
+  async headObject(_key: string): Promise<StoredObjectMetadata | null> {
+    return null;
+  }
+
+  /** Accepts the write and discards it — the bytes go nowhere. */
+  async putObject(request: PutObjectRequest): Promise<{ key: string } & ProviderProvenance> {
+    return { key: request.key, ...mockProvenance() };
   }
 
   health = async () => okHealth("storage");

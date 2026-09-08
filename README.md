@@ -6,34 +6,39 @@ LoadTopia provides the technology, pricing intelligence, trust, and transaction
 infrastructure that lets a shipper and a carrier transact directly — making a
 broker unnecessary when the two can deal with each other.
 
-> **Status: Milestone 2 — Marketplace (in review).**
-> On top of the Milestone 1 foundation (companies, membership auth, location book,
-> equipment, private shipper loads), LoadTopia is now a two-sided marketplace:
-> eligible carriers discover posted freight on a server-filtered load board,
-> submit offers, counter back and forth over an immutable round history, and one
-> offer is **atomically awarded** (`DRAFT → POSTED → OFFER_RECEIVED → AWARDED →
-> CARRIER_ASSIGNED`). Carrier authority/insurance verification and lane pricing go
-> through provider abstractions with clearly-labelled `[MOCK]` implementations.
-> **Not built:** tracking, documents, payments/payouts, real external integrations.
-> See [`docs/MILESTONE-2.md`](docs/MILESTONE-2.md),
+> **Status: Milestone 3 — Operations (in closeout review).**
+> On the Milestone 1 foundation and the Milestone 2 marketplace (load board,
+> offers/counteroffers over an immutable round history, atomic award), an awarded
+> load now runs as an operational shipment: the assigned carrier moves it
+> `CARRIER_ASSIGNED → PICKED_UP → IN_TRANSIT → DELIVERED`, both parties attach
+> BOL/POD/OTHER documents to **private object storage** via a two-stage direct
+> upload, the shipper reviews the POD, and — only once an approved POD exists —
+> closes the load out as `COMPLETED`. Manual carrier check-ins (typed city/state,
+> **not** GPS) and a LoadTopia-generated **immutable Rate Confirmation** round it
+> out.
+> **Not built:** GPS/telematics tracking, notifications delivery, exception/dispute
+> workflow, payments/payouts, real pricing/verification feeds (all provider
+> abstractions with `[MOCK]` impls where relevant).
+> See [`docs/MILESTONE-3.md`](docs/MILESTONE-3.md),
+> [`docs/MILESTONE-2.md`](docs/MILESTONE-2.md),
 > [`docs/MILESTONE-1.md`](docs/MILESTONE-1.md), and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
 ## Architecture at a glance
 
-| Concern      | Choice                                                                 |
-| ------------ | --------------------------------------------------------------------- |
-| Repo         | pnpm-workspaces monorepo                                             |
-| Backend API  | Fastify 5 + TypeScript — the single authoritative source of business rules |
-| Frontend     | Next.js 15 (App Router) — thin client, no business logic             |
-| Database     | PostgreSQL 16                                                         |
-| ORM          | Prisma 6 (migrations, type-safe client)                              |
-| Auth         | Argon2id password hashing + opaque server-side sessions (httpOnly cookies) |
-| AuthZ        | RBAC via a permission catalogue; role lives on company membership     |
-| Providers    | `RoutingProvider`, `PricingProvider`, `CarrierVerificationProvider`, `GeocodingProvider`, `PaymentProvider`, `StorageProvider`, `NotificationProvider`, `TrackingProvider` — swappable; mock impls for dev |
-| Testing      | Vitest (unit + integration); Fastify `inject()` for API tests         |
-| Local infra  | Docker Compose (PostgreSQL)                                          |
+| Concern     | Choice                                                                                                                                                                                                                                                                                           |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Repo        | pnpm-workspaces monorepo                                                                                                                                                                                                                                                                         |
+| Backend API | Fastify 5 + TypeScript — the single authoritative source of business rules                                                                                                                                                                                                                       |
+| Frontend    | Next.js 15 (App Router) — thin client, no business logic                                                                                                                                                                                                                                         |
+| Database    | PostgreSQL 16                                                                                                                                                                                                                                                                                    |
+| ORM         | Prisma 6 (migrations, type-safe client)                                                                                                                                                                                                                                                          |
+| Auth        | Argon2id password hashing + opaque server-side sessions (httpOnly cookies)                                                                                                                                                                                                                       |
+| AuthZ       | RBAC via a permission catalogue; role lives on company membership                                                                                                                                                                                                                                |
+| Providers   | `RoutingProvider` (Google, DRIVE mode) + `GeocodingProvider` (Google) real; `StorageProvider` real (`S3StorageProvider`, private bucket); `PricingProvider`, `CarrierVerificationProvider`, `PaymentProvider`, `NotificationProvider`, `TrackingProvider` mock — all swappable behind interfaces |
+| Testing     | Vitest (unit + integration); Fastify `inject()` for API tests                                                                                                                                                                                                                                    |
+| Local infra | Docker Compose (PostgreSQL)                                                                                                                                                                                                                                                                      |
 
 Full detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -46,7 +51,7 @@ packages/
   domain/     business logic: load state machine, RBAC permissions & policies
   db/         Prisma schema, migrations, seed, client singleton
   providers/  external-service interfaces + mock implementations
-docs/         ARCHITECTURE.md, ROADMAP.md
+docs/         ARCHITECTURE.md, ROADMAP.md, MILESTONE-1.md, MILESTONE-2.md, MILESTONE-3.md, SECURITY.md
 ```
 
 ---
@@ -112,18 +117,18 @@ Then open http://localhost:3000 and sign in. The web app reverse-proxies
 
 ## Common tasks
 
-| Command                    | Description                                        |
-| -------------------------- | ------------------------------------------------- |
-| `pnpm dev`                 | Run api + web in watch mode                       |
-| `pnpm test`                | Unit tests (no external dependencies)             |
-| `pnpm test:integration`    | Integration tests (needs `TEST_DATABASE_URL`)     |
-| `pnpm typecheck`           | `tsc --noEmit` across every package               |
-| `pnpm lint`                | ESLint                                            |
-| `pnpm build`               | Build all packages                                |
-| `pnpm db:migrate`          | Create/apply a dev migration                      |
-| `pnpm db:migrate:deploy`   | Apply committed migrations (CI/prod)              |
-| `pnpm db:studio`           | Prisma Studio                                     |
-| `pnpm docker:up` / `:down` | Start/stop local PostgreSQL                       |
+| Command                    | Description                                   |
+| -------------------------- | --------------------------------------------- |
+| `pnpm dev`                 | Run api + web in watch mode                   |
+| `pnpm test`                | Unit tests (no external dependencies)         |
+| `pnpm test:integration`    | Integration tests (needs `TEST_DATABASE_URL`) |
+| `pnpm typecheck`           | `tsc --noEmit` across every package           |
+| `pnpm lint`                | ESLint                                        |
+| `pnpm build`               | Build all packages                            |
+| `pnpm db:migrate`          | Create/apply a dev migration                  |
+| `pnpm db:migrate:deploy`   | Apply committed migrations (CI/prod)          |
+| `pnpm db:studio`           | Prisma Studio                                 |
+| `pnpm docker:up` / `:down` | Start/stop local PostgreSQL                   |
 
 ---
 
@@ -132,9 +137,13 @@ Then open http://localhost:3000 and sign in. The web app reverse-proxies
 - No secrets in the repo. `.env` is git-ignored; `.env.example` is the template.
 - Passwords hashed with Argon2id; only SHA-256 hashes of session tokens are stored.
 - Authorization is enforced **only** on the API. The web client's role checks are cosmetic.
-- Append-only history: `load_events`, `market_rates`, and `audit_logs` are never
-  updated or deleted by application code — this transaction history is LoadTopia's
-  long-term competitive asset.
+- Append-only history: `load_events`, `market_rates`, `audit_logs`,
+  `offer_rounds`/`offer_events`, `pricing_snapshots`, `document_reviews`, and the
+  `rate_confirmations` commercial snapshot are never updated or deleted by
+  application code (most enforced by a DB trigger) — this transaction history is
+  LoadTopia's long-term competitive asset.
+- Operational documents live in a **private** S3-compatible bucket; every access
+  is a short-lived signed URL. Credentials never reach the browser.
 - GitHub is the source of truth. Production targets owner-controlled cloud infra
   (containers + managed PostgreSQL). The project has **no** runtime dependency on
   any single PaaS.

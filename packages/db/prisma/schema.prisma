@@ -83,6 +83,46 @@ enum LoadEventType {
   OFFER_REJECTED
   NOTE_ADDED
   CANCELLED
+  // --- Milestone 3 (Operations) ---
+  CHECK_IN_ADDED
+  DOCUMENT_UPLOADED
+  DOCUMENT_REVIEWED
+  DOCUMENT_REMOVED
+  EXCEPTION_REPORTED
+}
+
+// --- Operations (Milestone 3) --------------------------------------------- -
+
+/// Operational document category. The Rate Confirmation is a separate,
+/// system-generated record (see RateConfirmationStatus) — never a row here.
+enum DocumentType {
+  BOL
+  POD
+  OTHER
+}
+
+/// Current review pointer on a LoadDocument (POD only — null for BOL/OTHER).
+/// Mutable, mirroring OfferThread.status; the immutable history lives in
+/// DocumentReview, mirroring OfferEvent.
+enum DocumentReviewStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
+/// A single immutable review decision (DocumentReview.decision) — narrower
+/// than DocumentReviewStatus, which also has the non-decision PENDING_REVIEW.
+enum DocumentReviewDecision {
+  APPROVED
+  REJECTED
+}
+
+/// Rate Confirmation render/storage status. Never gates the commercial
+/// snapshot's own validity — only whether the rendered artifact exists yet.
+enum RateConfirmationStatus {
+  PENDING
+  GENERATED
+  FAILED
 }
 
 // --- Marketplace (Milestone 2) -------------------------------------------- --
@@ -170,6 +210,11 @@ model Company {
   carrierOfferThreads  OfferThread[]   @relation("ThreadCarrier")
   proposedOfferRounds  OfferRound[]    @relation("RoundProposedByCompany")
   offerEvents          OfferEvent[]
+  loadEventsActedFor         LoadEvent[]
+  uploadedDocuments          LoadDocument[]
+  documentReviews            DocumentReview[]
+  rateConfirmationsAsShipper RateConfirmation[] @relation("RateConfirmationShipper")
+  rateConfirmationsAsCarrier RateConfirmation[] @relation("RateConfirmationCarrier")
 
   @@unique([type, name])
   @@unique([loadNumberPrefix])
@@ -196,6 +241,9 @@ model User {
   proposedOfferRounds OfferRound[]   @relation("RoundProposedByUser")
   offerEvents         OfferEvent[]
   pricingSnapshots    PricingSnapshot[]
+  loadCheckIns        LoadCheckIn[]
+  uploadedDocuments   LoadDocument[]
+  documentReviews     DocumentReview[]
 
   @@map("users")
 }
@@ -385,6 +433,15 @@ model Load {
 
   postedAt    DateTime? @map("posted_at") @db.Timestamptz(6)
   cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(6)
+
+  // Operational lifecycle (Milestone 3). Reserved in the LoadStatus enum and
+  // the domain state machine since Phase 0; unexposed until now — see
+  // EXPOSED_LOAD_STATUSES. No historical row can have ever reached these
+  // statuses before this migration, so all three are safely null-by-default.
+  pickedUpAt  DateTime? @map("picked_up_at") @db.Timestamptz(6)
+  deliveredAt DateTime? @map("delivered_at") @db.Timestamptz(6)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -398,6 +455,9 @@ model Load {
   events           LoadEvent[]
   offerThreads     OfferThread[]
   pricingSnapshots PricingSnapshot[]
+  checkIns         LoadCheckIn[]
+  documents        LoadDocument[]
+  rateConfirmation RateConfirmation?
 
   @@index([status])
   @@index([shipperCompanyId, status])
@@ -414,18 +474,24 @@ model Load {
 /// IMMUTABLE append-only load audit trail. Application code only ever INSERTs;
 /// a database trigger rejects UPDATE and DELETE (m1_foundation migration).
 model LoadEvent {
-  id          String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  loadId      String        @map("load_id") @db.Uuid
-  type        LoadEventType
-  fromStatus  LoadStatus?   @map("from_status")
-  toStatus    LoadStatus?   @map("to_status")
-  actorUserId String?       @map("actor_user_id") @db.Uuid
-  note        String?
-  data        Json?
-  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId         String        @map("load_id") @db.Uuid
+  type           LoadEventType
+  fromStatus     LoadStatus?   @map("from_status")
+  toStatus       LoadStatus?   @map("to_status")
+  actorUserId    String?       @map("actor_user_id") @db.Uuid
+  /// Milestone 3: which company the actor was acting for. Null for every
+  /// pre-Milestone-3 event (only the shipper ever wrote one before, so it was
+  /// never captured) — never backfilled from later, possibly-changed
+  /// membership state. Mirrors OfferEvent.actorCompanyId exactly.
+  actorCompanyId String?       @map("actor_company_id") @db.Uuid
+  note           String?
+  data           Json?
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  load  Load  @relation(fields: [loadId], references: [id], onDelete: Cascade)
-  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  load         Load     @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  actor        User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorCompany Company? @relation(fields: [actorCompanyId], references: [id], onDelete: SetNull)
 
   @@index([loadId, createdAt])
   @@index([type, createdAt])
@@ -515,6 +581,7 @@ model OfferRound {
   childRound        OfferRound?  @relation("RoundChain")
   currentOfThread   OfferThread? @relation("ThreadCurrentRound")
   awardedLoad       Load?        @relation("LoadAwardedRound")
+  rateConfirmation  RateConfirmation? @relation("RateConfirmationAwardedRound")
 
   @@unique([threadId, roundNumber])
   @@index([threadId, createdAt])
@@ -568,6 +635,190 @@ model PricingSnapshot {
 
   @@index([loadId, createdAt])
   @@map("pricing_snapshots")
+}
+
+// ---------------------------------------------------------------------------
+// Operations (Milestone 3) — post-award shipment lifecycle
+// ---------------------------------------------------------------------------
+
+/// Manual carrier location/status check-ins (tracking Level B). APPEND-ONLY at
+/// the database level (loadtopia_reject_mutation trigger, migration
+/// 20260907120000) — INSERT only; UPDATE/DELETE rejected by PostgreSQL, like
+/// load_events / document_reviews. First-party operational data — NOT
+/// provider-abstracted; TrackingProvider stays reserved for a future
+/// automated-telematics milestone.
+model LoadCheckIn {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId      String   @map("load_id") @db.Uuid
+  actorUserId String   @map("actor_user_id") @db.Uuid
+  city        String
+  state       String
+  note        String?
+  latitude    Decimal? @db.Decimal(9, 6)
+  longitude   Decimal? @db.Decimal(9, 6)
+  /// When the check-in was recorded in LoadTopia — the SERVER clock at write
+  /// time (the same `now` as the CHECK_IN_ADDED event's transaction). The M3
+  /// manual flow does not accept a client-supplied timestamp; this is not a
+  /// device time and not a GPS fix time.
+  recordedAt  DateTime @map("recorded_at") @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  load  Load @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  actor User @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([loadId, recordedAt])
+  @@map("load_check_ins")
+}
+
+/// Operational, user-submitted evidence — BOL / POD / OTHER. The Rate
+/// Confirmation is a separate, system-generated record (see
+/// RateConfirmation) and is never a row here.
+///
+/// Two-stage upload: a row is created at request time with confirmedAt =
+/// null and is invisible to every list/read endpoint and never reviewable
+/// until the client confirms the underlying object upload actually
+/// succeeded (confirmedAt set, and — for a POD — reviewStatus set to
+/// PENDING_REVIEW only at that moment, never at request time).
+model LoadDocument {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId              String                @map("load_id") @db.Uuid
+  docType             DocumentType          @map("doc_type")
+  uploadedByUserId    String                @map("uploaded_by_user_id") @db.Uuid
+  uploadedByCompanyId String                @map("uploaded_by_company_id") @db.Uuid
+  /// Server-generated at request time: loads/{loadId}/documents/{id} —
+  /// never client-supplied.
+  storageKey          String                @map("storage_key")
+  /// Checked against the upload allowlist before a signed upload is issued.
+  contentType         String                @map("content_type")
+  sizeBytes           Int?                  @map("size_bytes")
+  originalFilename    String?               @map("original_filename")
+  confirmedAt         DateTime?             @map("confirmed_at") @db.Timestamptz(6)
+  /// POD only; set to PENDING_REVIEW at confirm time. Null for BOL/OTHER.
+  reviewStatus        DocumentReviewStatus? @map("review_status")
+  /// Only meaningful for a corrected POD re-upload after rejection. The
+  /// service layer enforces: same load, doc_type = POD, review_status =
+  /// REJECTED on the referenced row.
+  replacesDocumentId  String?               @map("replaces_document_id") @db.Uuid
+  /// Soft-delete only — never a hard DELETE. Settable only under the
+  /// narrowed rule in the application layer: PENDING_REVIEW POD or
+  /// non-terminal BOL/OTHER, uploader's own company, non-terminal load.
+  /// An APPROVED or REJECTED POD is never removable by any normal user.
+  removedAt           DateTime?             @map("removed_at") @db.Timestamptz(6)
+  createdAt           DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  load              Load             @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  uploadedByUser    User             @relation(fields: [uploadedByUserId], references: [id], onDelete: Restrict)
+  uploadedByCompany Company          @relation(fields: [uploadedByCompanyId], references: [id], onDelete: Restrict)
+  replacesDocument  LoadDocument?    @relation("DocumentReplacement", fields: [replacesDocumentId], references: [id], onDelete: SetNull)
+  replacedBy        LoadDocument[]   @relation("DocumentReplacement")
+  reviews           DocumentReview[]
+
+  @@index([loadId, docType])
+  // What assertCompletionReadiness() queries: doc_type='POD' AND
+  // review_status='APPROVED' AND removed_at IS NULL.
+  @@index([loadId, docType, reviewStatus])
+  @@map("load_documents")
+}
+
+/// IMMUTABLE. One row per POD review decision — the audit trail behind
+/// LoadDocument.reviewStatus, structurally identical in role to OfferEvent
+/// behind OfferThread.status. documentId is UNIQUE: a specific document
+/// receives at most one terminal review decision, guaranteed by the
+/// database — not application row-locking alone (mirrors the existing
+/// "DB partial unique guarantees ≤ 1 per load" precedent on offer_threads).
+model DocumentReview {
+  id                String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId        String                 @unique @map("document_id") @db.Uuid
+  reviewerUserId    String                 @map("reviewer_user_id") @db.Uuid
+  reviewerCompanyId String                 @map("reviewer_company_id") @db.Uuid
+  decision          DocumentReviewDecision
+  /// Required at the API layer iff decision = REJECTED.
+  reason            String?
+  createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  document        LoadDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  reviewer        User         @relation(fields: [reviewerUserId], references: [id], onDelete: Restrict)
+  reviewerCompany Company      @relation(fields: [reviewerCompanyId], references: [id], onDelete: Restrict)
+
+  @@index([documentId, createdAt])
+  @@map("document_reviews")
+}
+
+/// IMMUTABLE commercial snapshot, generated entirely by LoadTopia (never
+/// uploaded), persisted inside OffersService.accept()'s existing award
+/// transaction — the commercial agreement is created by offer acceptance,
+/// NOT by carrier assignment. At most one per load (see the dormant
+/// AWARDED -> POSTED transition note in docs/MILESTONE-3.md for why this is
+/// safe under the currently-reachable lifecycle).
+///
+/// Enforced by a dedicated trigger (loadtopia_protect_commercial_snapshot)
+/// that permits ONLY status/storageKey/generatedAt to change post-insert;
+/// every field below that line is written once, at insert, never again.
+/// DELETE is prohibited unconditionally.
+model RateConfirmation {
+  id              String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId          String                 @unique @map("load_id") @db.Uuid
+  referenceNumber String                 @unique @map("reference_number")
+  status          RateConfirmationStatus @default(PENDING)
+  /// Deterministic: rate-confirmations/{loadId}/{id}.pdf — computed once,
+  /// from the row's own ids. NEVER a fresh random key per render attempt,
+  /// so a crash-and-retry always overwrites the same object.
+  storageKey      String?                @map("storage_key")
+  generatedAt     DateTime?              @map("generated_at") @db.Timestamptz(6)
+
+  // --- commercial snapshot: written once, at insert, never again ---------
+  shipperCompanyId   String  @map("shipper_company_id") @db.Uuid
+  shipperCompanyName String  @map("shipper_company_name")
+  shipperMcNumber    String? @map("shipper_mc_number")
+  shipperDotNumber   String? @map("shipper_dot_number")
+
+  carrierCompanyId String  @map("carrier_company_id") @db.Uuid
+  carrierCompanyName String @map("carrier_company_name")
+  carrierLegalName String? @map("carrier_legal_name")
+  carrierMcNumber  String? @map("carrier_mc_number")
+  carrierDotNumber String? @map("carrier_dot_number")
+
+  originAddressLine1 String  @map("origin_address_line1")
+  originAddressLine2 String? @map("origin_address_line2")
+  originCity         String  @map("origin_city")
+  originState        String  @map("origin_state")
+  originPostalCode   String  @map("origin_postal_code")
+  originCountry      String  @map("origin_country")
+
+  destinationAddressLine1 String  @map("destination_address_line1")
+  destinationAddressLine2 String? @map("destination_address_line2")
+  destinationCity         String  @map("destination_city")
+  destinationState        String  @map("destination_state")
+  destinationPostalCode   String  @map("destination_postal_code")
+  destinationCountry      String  @map("destination_country")
+
+  pickupWindowStart   DateTime? @map("pickup_window_start") @db.Timestamptz(6)
+  pickupWindowEnd     DateTime? @map("pickup_window_end") @db.Timestamptz(6)
+  deliveryWindowStart DateTime? @map("delivery_window_start") @db.Timestamptz(6)
+  deliveryWindowEnd   DateTime? @map("delivery_window_end") @db.Timestamptz(6)
+
+  equipmentType EquipmentType @map("equipment_type")
+  commodity     String?
+  weightLbs     Int?    @map("weight_lbs")
+
+  agreedRate     Decimal @map("agreed_rate") @db.Decimal(14, 2)
+  currency       String  @default("USD")
+  distanceMeters Int?    @map("distance_meters")
+
+  awardedOfferRoundId String   @unique @map("awarded_offer_round_id") @db.Uuid
+  /// The SAME `now` value OffersService.accept() already captures once and
+  /// reuses for Load.awardedAt / OfferThread.closedAt — never an
+  /// independent new Date() call.
+  awardedAt           DateTime @map("awarded_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  load              Load       @relation(fields: [loadId], references: [id], onDelete: Restrict)
+  shipperCompany    Company    @relation("RateConfirmationShipper", fields: [shipperCompanyId], references: [id], onDelete: Restrict)
+  carrierCompany    Company    @relation("RateConfirmationCarrier", fields: [carrierCompanyId], references: [id], onDelete: Restrict)
+  awardedOfferRound OfferRound @relation("RateConfirmationAwardedRound", fields: [awardedOfferRoundId], references: [id], onDelete: Restrict)
+
+  @@map("rate_confirmations")
 }
 
 // ---------------------------------------------------------------------------

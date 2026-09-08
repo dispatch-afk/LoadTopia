@@ -2,12 +2,15 @@ import type {
   CarrierOperatingStatus,
   CarrierVerificationStatus,
   CompanyType,
+  DocumentReviewStatus,
+  DocumentType,
   EquipmentType,
   LoadEventType,
   LoadStatus,
   MarketplaceEligibility,
   OfferEventType,
   OfferThreadStatus,
+  RateConfirmationStatus,
   TransportMode,
   UserRole,
 } from "./enums";
@@ -171,10 +174,20 @@ export interface LoadView {
   deliveryWindowEnd: string | null;
   routing: LoadRouting;
   availableTransitions: LoadStatus[];
+  /** True only when this load is DELIVERED and has an active, APPROVED POD —
+   *  i.e. `POST /loads/:id/complete` would succeed for the owning shipper.
+   *  COMPLETED appears in `availableTransitions` only when this is true. */
+  completionReady: boolean;
   createdByUserId: string;
   updatedByUserId: string | null;
   postedAt: string | null;
   cancelledAt: string | null;
+  /** Milestone 3 operational lifecycle timestamps. Null until the assigned
+   *  carrier reports the corresponding movement (and legitimately null forever
+   *  for any load that never reached that stage). */
+  pickedUpAt: string | null;
+  deliveredAt: string | null;
+  completedAt: string | null;
   /** Marketplace (Milestone 2): active-offer count + award outcome. */
   marketplace: LoadMarketplaceView;
   createdAt: string;
@@ -194,6 +207,144 @@ export interface LoadMarketplaceView {
     awardedAt: string;
     assignedAt: string | null;
   } | null;
+}
+
+// --- Operations (Milestone 3): manual check-ins ------------------------ ---
+
+/**
+ * A MANUAL operational check-in — a carrier-reported city/state (and optional
+ * reported coordinates) for an assigned shipment, recorded in LoadTopia at
+ * `recordedAt`. This is NOT a GPS fix, live location, or verified position;
+ * it is what a person typed in. Append-only: there is no edit or delete.
+ */
+export interface CheckInView {
+  id: string;
+  loadId: string;
+  /** The carrier user who recorded it. */
+  actorUserId: string;
+  city: string;
+  state: string;
+  note: string | null;
+  /** Reported latitude/longitude as decimal strings, or null. Always both or
+   *  neither. Never derived from city/state. */
+  latitude: string | null;
+  longitude: string | null;
+  /** When the check-in was recorded in LoadTopia (server clock) — not a device
+   *  timestamp and not a GPS time. */
+  recordedAt: string;
+  createdAt: string;
+}
+
+// --- Operations (Milestone 3): operational documents ------------------ ---
+
+/** Derived lifecycle state of a `load_documents` row. */
+export type DocumentStatus = "PENDING" | "CONFIRMED" | "REMOVED";
+
+/**
+ * An operational document (BOL / POD / OTHER). Metadata only — the file itself
+ * is private and reachable solely through a short-lived signed download URL
+ * from a separate endpoint. A `PENDING` row is an authorized upload attempt,
+ * NOT a document LoadTopia possesses; list endpoints never return it.
+ */
+export interface DocumentView {
+  id: string;
+  loadId: string;
+  docType: DocumentType;
+  status: DocumentStatus;
+  contentType: string;
+  /** Declared at request, replaced by the storage-confirmed actual at confirm
+   *  (they are equal — strict equality is enforced). Null before confirm. */
+  sizeBytes: number | null;
+  originalFilename: string | null;
+  /** POD only; null for BOL/OTHER and for an unconfirmed POD. */
+  reviewStatus: DocumentReviewStatus | null;
+  /** The reviewer's reason — present only for a REJECTED POD. */
+  reviewReason: string | null;
+  /** Set only on a corrected POD re-upload; points at the REJECTED original. */
+  replacesDocumentId: string | null;
+  uploadedByUserId: string;
+  uploadedByCompanyId: string;
+  confirmedAt: string | null;
+  removedAt: string | null;
+  createdAt: string;
+}
+
+/** The signed instructions the browser uses to upload the file directly to
+ *  object storage. Never persisted; expires quickly. */
+export interface DocumentUploadInstructions {
+  url: string;
+  method: "PUT" | "POST";
+  /** Presigned-POST form fields to submit verbatim (present for `POST`). */
+  fields?: Record<string, string>;
+  headers: Record<string, string>;
+  expiresAt: string;
+  /** The hard maximum the storage layer will accept for this upload. */
+  maxBytes: number;
+}
+
+export interface DocumentUploadRequestView {
+  document: DocumentView;
+  upload: DocumentUploadInstructions;
+}
+
+/** A short-lived authorized download link for a confirmed, non-removed
+ *  document whose object storage confirms the file still exists. */
+export interface DocumentDownloadView {
+  url: string;
+  expiresAt: string;
+}
+
+// --- Operations (Milestone 3): Rate Confirmation ------------------------ ---
+
+export interface RateConfirmationAddressView {
+  addressLine1: string;
+  addressLine2: string | null;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string;
+}
+
+/**
+ * The LoadTopia-generated commercial record for an awarded load. Every field
+ * below is a read of the IMMUTABLE `rate_confirmations` snapshot — never
+ * recomputed from current mutable load/company/offer data.
+ *
+ * `download` is non-null only when a rendered PDF exists and object storage
+ * confirmed it. `documentPending` is true when the artifact is not available
+ * yet (generation still pending/failed, or storage temporarily degraded) — the
+ * commercial agreement itself is unaffected either way.
+ */
+export interface RateConfirmationView {
+  loadId: string;
+  referenceNumber: string;
+  status: RateConfirmationStatus;
+  awardedAt: string;
+  agreedRate: string;
+  currency: string;
+  distanceMeters: number | null;
+  shipper: {
+    companyName: string;
+    mcNumber: string | null;
+    dotNumber: string | null;
+  };
+  carrier: {
+    companyName: string;
+    legalName: string | null;
+    mcNumber: string | null;
+    dotNumber: string | null;
+  };
+  origin: RateConfirmationAddressView;
+  destination: RateConfirmationAddressView;
+  pickupWindowStart: string | null;
+  pickupWindowEnd: string | null;
+  deliveryWindowStart: string | null;
+  deliveryWindowEnd: string | null;
+  equipmentType: EquipmentType;
+  commodity: string | null;
+  weightLbs: number | null;
+  download: { url: string; expiresAt: string } | null;
+  documentPending: boolean;
 }
 
 // --- Marketplace: carrier profile ---------------------------------------- --

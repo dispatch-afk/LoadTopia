@@ -1,6 +1,6 @@
 import type { AuthenticatedActor } from "@loadtopia/shared";
-import { UserRole } from "@loadtopia/shared";
-import { type Permission, roleHasPermission } from "./permissions";
+import { LoadStatus, UserRole } from "@loadtopia/shared";
+import { Permission, roleHasPermission } from "./permissions";
 
 export class AuthorizationError extends Error {
   readonly code = "FORBIDDEN";
@@ -84,6 +84,134 @@ export function assertCanReadLoad(actor: AuthenticatedActor, load: LoadAccessVie
 export function assertCanModifyLoad(actor: AuthenticatedActor, load: LoadAccessView): void {
   if (!canReadLoad(actor, load)) throw new ResourceScopeError();
   if (!canModifyLoad(actor, load)) throw new AuthorizationError();
+}
+
+/** Minimal projection of a load needed for shipment-operation access decisions. */
+export interface ShipmentAccessView extends LoadAccessView {
+  status: LoadStatus;
+}
+
+/**
+ * Operational write access (Milestone 3): the assigned carrier company, and
+ * ONLY the assigned carrier company, on a shipment that has actually reached
+ * CARRIER_ASSIGNED or later. Deliberately separate from — and never a
+ * modification of — {@link canModifyLoad}, which stays hardcoded shipper-only.
+ *
+ * `carrierCompanyId` is set at AWARDED (offer acceptance), one step before
+ * assignment; a carrier's company briefly "wins" the load before the shipper
+ * confirms assignment, and must not gain operational access during that
+ * window — CARRIER_ASSIGNED is the actual start of operational execution.
+ */
+export function canOperateShipment(actor: AuthenticatedActor, load: ShipmentAccessView): boolean {
+  if (isAdmin(actor)) return true;
+  if (actor.companyId === null) return false;
+  if (load.carrierCompanyId === null) return false;
+  if (actor.companyId !== load.carrierCompanyId) return false;
+  return load.status !== LoadStatus.AWARDED;
+}
+
+export function assertCanOperateShipment(
+  actor: AuthenticatedActor,
+  load: ShipmentAccessView,
+): void {
+  if (!canReadLoad(actor, load)) throw new ResourceScopeError();
+  if (!canOperateShipment(actor, load)) throw new AuthorizationError();
+}
+
+/**
+ * Operational-document upload access (Milestone 3, Rev. 2 §7). Unlike status
+ * transitions and check-ins, Rev. 2 authorizes BOTH parties to attach BOL / POD
+ * / OTHER evidence:
+ *
+ *   - the owning SHIPPER, with its normal load-management permission
+ *     ({@link Permission.LOAD_UPDATE_OWN}); or
+ *   - the ASSIGNED CARRIER company, once the shipment is actually operational
+ *     (CARRIER_ASSIGNED or later — the AWARDED window is excluded, exactly as
+ *     {@link canOperateShipment}), holding {@link Permission.SHIPMENT_OPERATE_ASSIGNED}.
+ *
+ * This is a document-specific boundary — it deliberately does NOT force the
+ * shipper through the carrier-only `canOperateShipment` / `SHIPMENT_OPERATE_ASSIGNED`
+ * concepts, and it does NOT grant the shipper any status-transition or check-in
+ * ability. `canModifyLoad` is untouched.
+ */
+export function canUploadOperationalDocument(
+  actor: AuthenticatedActor,
+  load: ShipmentAccessView,
+): boolean {
+  if (isAdmin(actor)) return true;
+  if (actor.companyId === null) return false;
+  if (actor.companyId === load.shipperCompanyId) {
+    return roleHasPermission(actor.role, Permission.LOAD_UPDATE_OWN);
+  }
+  if (load.carrierCompanyId !== null && actor.companyId === load.carrierCompanyId) {
+    return (
+      load.status !== LoadStatus.AWARDED &&
+      roleHasPermission(actor.role, Permission.SHIPMENT_OPERATE_ASSIGNED)
+    );
+  }
+  return false;
+}
+
+export function assertCanUploadOperationalDocument(
+  actor: AuthenticatedActor,
+  load: ShipmentAccessView,
+): void {
+  if (!canReadLoad(actor, load)) throw new ResourceScopeError();
+  if (!canUploadOperationalDocument(actor, load)) throw new AuthorizationError();
+}
+
+/**
+ * May `actor` CONFIRM or SOFT-REMOVE an operational document its own company
+ * uploaded? (Slice 6A hardening.) Company scope is necessary but NOT sufficient:
+ * the actor must ALSO hold the same permission the upload REQUEST required for
+ * that company side — otherwise any member of the uploading company could
+ * confirm/remove without ever being allowed to upload. Concretely:
+ *
+ *   - `actor.companyId` must equal `document.uploadedByCompanyId`, AND
+ *   - {@link canUploadOperationalDocument} must hold for `actor` on this load
+ *     (which pins the shipper branch to `LOAD_UPDATE_OWN` and the carrier
+ *     branch to `SHIPMENT_OPERATE_ASSIGNED` + being THIS load's carrier +
+ *     not-AWARDED).
+ *
+ * It does NOT require `actor.userId === document.uploadedByUserId` — any
+ * properly-permissioned member of the uploading company may act. Admin is
+ * unchanged.
+ */
+export function canManageOwnOperationalDocument(
+  actor: AuthenticatedActor,
+  load: ShipmentAccessView,
+  document: { uploadedByCompanyId: string },
+): boolean {
+  if (isAdmin(actor)) return true;
+  if (actor.companyId === null) return false;
+  if (actor.companyId !== document.uploadedByCompanyId) return false;
+  return canUploadOperationalDocument(actor, load);
+}
+
+export function assertCanManageOwnOperationalDocument(
+  actor: AuthenticatedActor,
+  load: ShipmentAccessView,
+  document: { uploadedByCompanyId: string },
+): void {
+  if (!canReadLoad(actor, load)) throw new ResourceScopeError();
+  if (!canManageOwnOperationalDocument(actor, load, document)) throw new AuthorizationError();
+}
+
+/** How `actor` relates to a specific load — drives which lifecycle transitions
+ *  a `LoadView` advertises to them (see the loads serializer). */
+export type LoadViewerRole = "shipper" | "carrier" | "admin" | "other";
+
+export function loadViewerRole(actor: AuthenticatedActor, load: LoadAccessView): LoadViewerRole {
+  if (isAdmin(actor)) return "admin";
+  if (actor.companyId !== null && actor.companyId === load.shipperCompanyId) return "shipper";
+  if (
+    load.carrierCompanyId !== null &&
+    actor.companyId !== null &&
+    actor.companyId === load.carrierCompanyId
+  ) {
+    return "carrier";
+  }
+  return "other";
 }
 
 /** A company's own record is readable/editable by its members (or staff). */

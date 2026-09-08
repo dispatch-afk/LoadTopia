@@ -1,4 +1,10 @@
-import type { GeocodingProvider, ProviderName, ProviderRegistry, RoutingProvider } from "./types";
+import type {
+  GeocodingProvider,
+  ProviderName,
+  ProviderRegistry,
+  RoutingProvider,
+  StorageProvider,
+} from "./types";
 import { GoogleGeocodingProvider } from "./google/google-geocoding-provider";
 import { GoogleRoutingProvider } from "./google/google-routing-provider";
 import { resolveApiKey } from "./google/shared";
@@ -12,6 +18,8 @@ import {
   MockStorageProvider,
   MockTrackingProvider,
 } from "./mock/mock-misc-providers";
+import { S3StorageProvider } from "./s3/s3-storage-provider";
+import { type PartialS3StorageConfig, resolveS3StorageConfig } from "./s3/shared";
 
 /** Per-provider selection, e.g. `{ pricing: "mock", routing: "mock" }`. */
 export type ProviderSelection = Record<ProviderName, string>;
@@ -29,6 +37,14 @@ export interface GoogleCredentials {
 }
 
 /**
+ * S3-compatible object-storage configuration. Only consulted when
+ * `STORAGE_PROVIDER=s3`; {@link resolveS3StorageConfig} validates it at boot
+ * and throws loudly on missing/invalid values — there is deliberately no
+ * fallback to MockStorageProvider.
+ */
+export type StorageCredentials = PartialS3StorageConfig;
+
+/**
  * Builds the concrete provider set from configuration.
  *
  * Every adapter is chosen ONCE, here, at boot. Selecting any value with no
@@ -40,6 +56,7 @@ export interface GoogleCredentials {
 export function createProviderRegistry(
   selection: ProviderSelection,
   google: GoogleCredentials = {},
+  storage: StorageCredentials = {},
 ): ProviderRegistry {
   return {
     routing: build<RoutingProvider>("routing", selection.routing, {
@@ -56,7 +73,10 @@ export function createProviderRegistry(
       mock: () => new MockCarrierVerificationProvider(),
     }),
     payment: build("payment", selection.payment, { mock: () => new MockPaymentProvider() }),
-    storage: build("storage", selection.storage, { mock: () => new MockStorageProvider() }),
+    storage: build<StorageProvider>("storage", selection.storage, {
+      mock: () => new MockStorageProvider(),
+      s3: () => new S3StorageProvider(resolveS3StorageConfig(storage)),
+    }),
     notification: build("notification", selection.notification, {
       mock: () => new MockNotificationProvider(),
     }),

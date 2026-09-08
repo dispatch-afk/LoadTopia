@@ -22,12 +22,18 @@ export const forbidden = (msg = "You do not have permission to perform this acti
   new AppError(403, "FORBIDDEN", msg);
 export const notFound = (msg = "Resource not found") => new AppError(404, "NOT_FOUND", msg);
 export const conflict = (msg: string) => new AppError(409, "CONFLICT", msg);
+/** A storage-dependent action could not complete because object storage is
+ *  unreachable. Never carries a bucket name, endpoint, or provider internals. */
+export const storageUnavailable = (
+  msg = "Document storage is temporarily unavailable. Try again shortly.",
+) => new AppError(503, "STORAGE_UNAVAILABLE", msg);
 
 const DOMAIN_ERROR_CODES = new Set([
   "FORBIDDEN",
   "NOT_FOUND",
   "VALIDATION_ERROR",
   "INVALID_LOAD_TRANSITION",
+  "INVALID_DOCUMENT_REVIEW_TRANSITION",
   "COMPANY_CONTEXT",
   // Marketplace domain errors (@loadtopia/domain marketplace/*). Each carries a
   // numeric statusCode; the handler below trusts it (default 409 for the
@@ -91,7 +97,8 @@ export function registerErrorHandler(app: FastifyInstance): void {
       const status =
         typeof error.statusCode === "number"
           ? error.statusCode
-          : error.code === "INVALID_LOAD_TRANSITION"
+          : error.code === "INVALID_LOAD_TRANSITION" ||
+              error.code === "INVALID_DOCUMENT_REVIEW_TRANSITION"
             ? 409
             : 400;
       const details =

@@ -1,5 +1,10 @@
 import type { PrismaClient } from "@loadtopia/db";
-import { createProviderRegistry } from "@loadtopia/providers";
+import {
+  createProviderRegistry,
+  FakeStorageProvider,
+  type ProviderRegistry,
+  type StorageProvider,
+} from "@loadtopia/providers";
 import { type Env, loadEnv } from "../config/env";
 
 export function testEnv(overrides: Partial<NodeJS.ProcessEnv> = {}): Env {
@@ -22,6 +27,19 @@ export const allMockProviders = () =>
     notification: "mock",
     tracking: "mock",
   });
+
+/**
+ * All-mock registry with a controllable in-process {@link FakeStorageProvider}
+ * swapped in for storage — nothing here ever makes a network call. Used by the
+ * Milestone 3 document / Rate Confirmation integration tests to exercise
+ * real store/confirm/download behavior and simulate storage outages.
+ */
+export function providersWithFakeStorage(storage: StorageProvider = new FakeStorageProvider()): {
+  providers: ProviderRegistry;
+  storage: StorageProvider;
+} {
+  return { providers: { ...allMockProviders(), storage }, storage };
+}
 
 /** Minimal Prisma test double. Pass handlers for the calls a test exercises. */
 export function fakePrisma(partial: Record<string, unknown> = {}): PrismaClient {

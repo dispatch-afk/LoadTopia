@@ -40,6 +40,12 @@ const EnvSchema = z.object({
   MARKETPLACE_WRITE_RATE_LIMIT_WINDOW: z.string().default("1 minute"),
   MARKETPLACE_AWARD_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(15),
   MARKETPLACE_AWARD_RATE_LIMIT_WINDOW: z.string().default("1 minute"),
+  // Operational-document upload requests cost object storage per call, so they
+  // get a dedicated limit (Rev. 2 Correction 12) — generous, mirroring the
+  // marketplace write default so a dispatcher uploading several BOL/POD files
+  // across loads is never throttled.
+  DOCUMENT_UPLOAD_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
+  DOCUMENT_UPLOAD_RATE_LIMIT_WINDOW: z.string().default("1 minute"),
 
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
@@ -61,6 +67,19 @@ const EnvSchema = z.object({
   GOOGLE_MAPS_API_KEY: z.string().optional(),
   GOOGLE_ROUTES_API_KEY: z.string().optional(),
   GOOGLE_GEOCODING_API_KEY: z.string().optional(),
+
+  // S3-compatible object storage (real, private). Only consulted when
+  // STORAGE_PROVIDER=s3 — createProviderRegistry fails loudly at boot if that
+  // provider is selected and required values are missing/invalid. Credentials
+  // are server-side only; never read by the web app, never a public bucket.
+  STORAGE_S3_ENDPOINT: z.string().url().optional(),
+  STORAGE_S3_REGION: z.string().optional(),
+  STORAGE_S3_BUCKET: z.string().optional(),
+  STORAGE_S3_ACCESS_KEY_ID: z.string().optional(),
+  STORAGE_S3_SECRET_ACCESS_KEY: z.string().optional(),
+  STORAGE_S3_FORCE_PATH_STYLE: booleanish.default(false),
+  // Signed-URL / presigned-POST lifetime. Bounded [60, 3600]; 15 min default.
+  STORAGE_SIGNED_URL_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(900),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -105,5 +124,17 @@ export function googleCredentials(env: Env) {
     mapsApiKey: env.GOOGLE_MAPS_API_KEY,
     routesApiKey: env.GOOGLE_ROUTES_API_KEY,
     geocodingApiKey: env.GOOGLE_GEOCODING_API_KEY,
+  };
+}
+
+export function storageCredentials(env: Env) {
+  return {
+    endpoint: env.STORAGE_S3_ENDPOINT,
+    region: env.STORAGE_S3_REGION,
+    bucket: env.STORAGE_S3_BUCKET,
+    accessKeyId: env.STORAGE_S3_ACCESS_KEY_ID,
+    secretAccessKey: env.STORAGE_S3_SECRET_ACCESS_KEY,
+    forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
+    signedUrlTtlSeconds: env.STORAGE_SIGNED_URL_TTL_SECONDS,
   };
 }

@@ -14,6 +14,9 @@
     "test:integration": "echo \"(no integration tests)\" && exit 0"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.799.0",
+    "@aws-sdk/s3-presigned-post": "^3.799.0",
+    "@aws-sdk/s3-request-presigner": "^3.799.0",
     "@loadtopia/shared": "workspace:*",
     "zod": "^3.24.1"
   },

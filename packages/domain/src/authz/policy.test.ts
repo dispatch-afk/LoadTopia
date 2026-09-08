@@ -1,15 +1,22 @@
-import { type AuthenticatedActor, CompanyType, UserRole } from "@loadtopia/shared";
+import { type AuthenticatedActor, CompanyType, LoadStatus, UserRole } from "@loadtopia/shared";
 import { describe, expect, it } from "vitest";
 import {
   AuthorizationError,
   ResourceScopeError,
+  assertCanManageOwnOperationalDocument,
   assertCanModifyLoad,
+  assertCanOperateShipment,
+  assertCanUploadOperationalDocument,
   assertCompanyScope,
   assertPermission,
+  canManageOwnOperationalDocument,
   canModifyLoad,
+  canOperateShipment,
   canReadLoad,
+  canUploadOperationalDocument,
   hasPermission,
   isSameCompany,
+  loadViewerRole,
 } from "./policy";
 import { Permission } from "./permissions";
 
@@ -70,6 +77,11 @@ describe("permission checks", () => {
     expect(hasPermission(carrier, Permission.LOAD_POST)).toBe(false);
   });
 
+  it("grants carriers the Milestone 3 shipment-operation permission, and only carriers", () => {
+    expect(hasPermission(carrier, Permission.SHIPMENT_OPERATE_ASSIGNED)).toBe(true);
+    expect(hasPermission(shipper, Permission.SHIPMENT_OPERATE_ASSIGNED)).toBe(false);
+  });
+
   it("grants admin every permission", () => {
     expect(hasPermission(admin, Permission.ADMIN_PANEL)).toBe(true);
     expect(hasPermission(admin, Permission.LOAD_CREATE)).toBe(true);
@@ -118,5 +130,166 @@ describe("load resource policy", () => {
   it("lets admin read and modify any load", () => {
     expect(canReadLoad(admin, load)).toBe(true);
     expect(canModifyLoad(admin, load)).toBe(true);
+  });
+});
+
+describe("shipment operation policy (Milestone 3)", () => {
+  const assigned = { shipperCompanyId: "co-shipper", carrierCompanyId: "co-carrier" };
+  const otherCarrier: AuthenticatedActor = {
+    ...carrier,
+    userId: "u-car2",
+    companyId: "co-carrier-2",
+    membershipId: "m-car2",
+  };
+
+  it("lets the assigned carrier operate a CARRIER_ASSIGNED-or-later shipment", () => {
+    for (const status of [
+      LoadStatus.CARRIER_ASSIGNED,
+      LoadStatus.PICKED_UP,
+      LoadStatus.IN_TRANSIT,
+      LoadStatus.DELIVERED,
+      LoadStatus.COMPLETED,
+    ]) {
+      expect(canOperateShipment(carrier, { ...assigned, status })).toBe(true);
+    }
+  });
+
+  it("denies the carrier during the AWARDED window — before the shipper confirms assignment", () => {
+    expect(canOperateShipment(carrier, { ...assigned, status: LoadStatus.AWARDED })).toBe(false);
+  });
+
+  it("never lets an unassigned carrier operate — assertCanOperateShipment 404s, not 403s", () => {
+    expect(
+      canOperateShipment(otherCarrier, { ...assigned, status: LoadStatus.CARRIER_ASSIGNED }),
+    ).toBe(false);
+    expect(() =>
+      assertCanOperateShipment(otherCarrier, { ...assigned, status: LoadStatus.CARRIER_ASSIGNED }),
+    ).toThrow(ResourceScopeError);
+  });
+
+  it("never lets the owning shipper operate the shipment — canModifyLoad stays the shipper's boundary", () => {
+    expect(canOperateShipment(shipper, { ...assigned, status: LoadStatus.CARRIER_ASSIGNED })).toBe(
+      false,
+    );
+    expect(() =>
+      assertCanOperateShipment(shipper, { ...assigned, status: LoadStatus.CARRIER_ASSIGNED }),
+    ).toThrow(AuthorizationError);
+  });
+
+  it("lets admin operate any shipment", () => {
+    expect(canOperateShipment(admin, { ...assigned, status: LoadStatus.PICKED_UP })).toBe(true);
+  });
+});
+
+describe("operational-document upload policy (Milestone 3, Rev. 2 §7)", () => {
+  const assigned = { shipperCompanyId: "co-shipper", carrierCompanyId: "co-carrier" };
+  const otherCarrier: AuthenticatedActor = { ...carrier, companyId: "co-carrier-2" };
+
+  it("lets the OWNING SHIPPER upload — using its normal load-management permission", () => {
+    for (const status of [
+      LoadStatus.CARRIER_ASSIGNED,
+      LoadStatus.PICKED_UP,
+      LoadStatus.IN_TRANSIT,
+      LoadStatus.DELIVERED,
+    ]) {
+      expect(canUploadOperationalDocument(shipper, { ...assigned, status })).toBe(true);
+    }
+  });
+
+  it("lets the ASSIGNED CARRIER upload once operational (not during AWARDED)", () => {
+    expect(
+      canUploadOperationalDocument(carrier, { ...assigned, status: LoadStatus.CARRIER_ASSIGNED }),
+    ).toBe(true);
+    expect(canUploadOperationalDocument(carrier, { ...assigned, status: LoadStatus.AWARDED })).toBe(
+      false,
+    );
+  });
+
+  it("denies an unrelated shipper (404) and a losing carrier (404)", () => {
+    expect(() =>
+      assertCanUploadOperationalDocument(otherShipper, {
+        ...assigned,
+        status: LoadStatus.PICKED_UP,
+      }),
+    ).toThrow(ResourceScopeError);
+    expect(() =>
+      assertCanUploadOperationalDocument(otherCarrier, {
+        ...assigned,
+        status: LoadStatus.PICKED_UP,
+      }),
+    ).toThrow(ResourceScopeError);
+  });
+
+  it("does not grant the shipper any status-transition or check-in ability", () => {
+    // still governed by canOperateShipment, which stays carrier-only
+    expect(canOperateShipment(shipper, { ...assigned, status: LoadStatus.PICKED_UP })).toBe(false);
+  });
+
+  it("lets admin upload", () => {
+    expect(canUploadOperationalDocument(admin, { ...assigned, status: LoadStatus.PICKED_UP })).toBe(
+      true,
+    );
+  });
+});
+
+describe("canManageOwnOperationalDocument (confirm / remove — Slice 6A)", () => {
+  const load = {
+    shipperCompanyId: "co-shipper",
+    carrierCompanyId: "co-carrier",
+    status: LoadStatus.PICKED_UP,
+  };
+  const shipperUpload = { uploadedByCompanyId: "co-shipper" };
+  const carrierUpload = { uploadedByCompanyId: "co-carrier" };
+  // same company as the uploader, but the wrong role → lacks the permission
+  const carrierRoleInShipperCo: AuthenticatedActor = { ...carrier, companyId: "co-shipper" };
+  const shipperRoleInCarrierCo: AuthenticatedActor = { ...shipper, companyId: "co-carrier" };
+
+  it("company scope alone is NOT enough — the upload-side permission is also required", () => {
+    // shipper-uploaded doc: a shipper-role member of the shipper company may act
+    expect(canManageOwnOperationalDocument(shipper, load, shipperUpload)).toBe(true);
+    // ...a carrier-role member of the SAME shipper company may not (no LOAD_UPDATE_OWN)
+    expect(canManageOwnOperationalDocument(carrierRoleInShipperCo, load, shipperUpload)).toBe(
+      false,
+    );
+
+    // carrier-uploaded doc: a carrier-role member of the carrier company may act
+    expect(canManageOwnOperationalDocument(carrier, load, carrierUpload)).toBe(true);
+    // ...a shipper-role member of the SAME carrier company may not (no SHIPMENT_OPERATE_ASSIGNED)
+    expect(canManageOwnOperationalDocument(shipperRoleInCarrierCo, load, carrierUpload)).toBe(
+      false,
+    );
+  });
+
+  it("the non-uploading party cannot manage the other party's document", () => {
+    expect(canManageOwnOperationalDocument(carrier, load, shipperUpload)).toBe(false);
+    expect(canManageOwnOperationalDocument(shipper, load, carrierUpload)).toBe(false);
+  });
+
+  it("a cross-company actor 404s (IDOR-safe), a same-company wrong-role actor 403s", () => {
+    expect(() => assertCanManageOwnOperationalDocument(otherShipper, load, shipperUpload)).toThrow(
+      ResourceScopeError,
+    );
+    expect(() =>
+      assertCanManageOwnOperationalDocument(carrierRoleInShipperCo, load, shipperUpload),
+    ).toThrow(AuthorizationError);
+  });
+
+  it("admin may manage either party's document", () => {
+    expect(canManageOwnOperationalDocument(admin, load, shipperUpload)).toBe(true);
+    expect(canManageOwnOperationalDocument(admin, load, carrierUpload)).toBe(true);
+  });
+});
+
+describe("loadViewerRole", () => {
+  const load = { shipperCompanyId: "co-shipper", carrierCompanyId: "co-carrier" };
+
+  it("classifies the actor against a specific load", () => {
+    expect(loadViewerRole(shipper, load)).toBe("shipper");
+    expect(loadViewerRole(carrier, load)).toBe("carrier");
+    expect(loadViewerRole(admin, load)).toBe("admin");
+    expect(loadViewerRole(otherShipper, load)).toBe("other");
+    expect(
+      loadViewerRole(carrier, { shipperCompanyId: "co-shipper", carrierCompanyId: null }),
+    ).toBe("other");
   });
 });

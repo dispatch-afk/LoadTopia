@@ -4,11 +4,13 @@ import {
   EXPOSED_LOAD_STATUSES,
   LOAD_STATUS_TRANSITIONS,
   LoadTransitionError,
+  OPERATIONAL_ACTIVITY_STATUSES,
   assertLoadTransition,
   canCancelLoad,
   canTransitionLoad,
   isExposedLoadStatus,
   isTerminalLoadStatus,
+  isWithinOperationalActivityWindow,
   nextLoadStatuses,
 } from "./load-state-machine";
 
@@ -97,13 +99,36 @@ describe("load state machine", () => {
     expect(canCancelLoad(LoadStatus.CARRIER_ASSIGNED)).toBe(true);
   });
 
-  it("exposes only DRAFT..CARRIER_ASSIGNED + CANCELLED (no execution states yet)", () => {
-    expect([...EXPOSED_LOAD_STATUSES].sort()).toEqual(
-      ["DRAFT", "POSTED", "OFFER_RECEIVED", "AWARDED", "CARRIER_ASSIGNED", "CANCELLED"].sort(),
-    );
-    expect(isExposedLoadStatus(LoadStatus.PICKED_UP)).toBe(false);
-    expect(isExposedLoadStatus(LoadStatus.DELIVERED)).toBe(false);
-    expect(isExposedLoadStatus(LoadStatus.COMPLETED)).toBe(false);
+  it("exposes the full lifecycle, including the Milestone 3 operational statuses", () => {
+    expect([...EXPOSED_LOAD_STATUSES].sort()).toEqual([...LOAD_STATUSES].sort());
+    expect(isExposedLoadStatus(LoadStatus.PICKED_UP)).toBe(true);
+    expect(isExposedLoadStatus(LoadStatus.IN_TRANSIT)).toBe(true);
+    expect(isExposedLoadStatus(LoadStatus.DELIVERED)).toBe(true);
+    expect(isExposedLoadStatus(LoadStatus.COMPLETED)).toBe(true);
     expect(isExposedLoadStatus(LoadStatus.AWARDED)).toBe(true);
+  });
+
+  it("the operational-activity window is CARRIER_ASSIGNED through DELIVERED only", () => {
+    expect([...OPERATIONAL_ACTIVITY_STATUSES].sort()).toEqual(
+      [
+        LoadStatus.CARRIER_ASSIGNED,
+        LoadStatus.PICKED_UP,
+        LoadStatus.IN_TRANSIT,
+        LoadStatus.DELIVERED,
+      ].sort(),
+    );
+    for (const s of OPERATIONAL_ACTIVITY_STATUSES) {
+      expect(isWithinOperationalActivityWindow(s)).toBe(true);
+    }
+    for (const s of [
+      LoadStatus.DRAFT,
+      LoadStatus.POSTED,
+      LoadStatus.OFFER_RECEIVED,
+      LoadStatus.AWARDED,
+      LoadStatus.COMPLETED,
+      LoadStatus.CANCELLED,
+    ]) {
+      expect(isWithinOperationalActivityWindow(s), s).toBe(false);
+    }
   });
 });
