@@ -36,6 +36,23 @@ export function isAdmin(actor: AuthenticatedActor): boolean {
 }
 
 /**
+ * Company-owner-level authority (Milestone 4 Phase 2): the active membership
+ * is the company's PRIMARY membership, or the actor is platform staff. This
+ * is layered ON TOP OF a role permission (e.g. {@link Permission.NETWORK_MANAGE}),
+ * never a replacement for it — mirrors how facility scope is an ADDITIONAL
+ * restriction on top of role permissions, just for "who" instead of "where".
+ * Used for: accepting/declining/disconnecting a Connection, block/unblock,
+ * private carrier preference, Carrier Group management, facility-scope admin.
+ */
+export function isCompanyPrimaryAuthority(actor: AuthenticatedActor): boolean {
+  return isAdmin(actor) || actor.isPrimary === true;
+}
+
+export function assertCompanyPrimaryAuthority(actor: AuthenticatedActor): void {
+  if (!isCompanyPrimaryAuthority(actor)) throw new AuthorizationError();
+}
+
+/**
  * Company-scope guard for every company-owned resource (locations, equipment,
  * loads, members). A non-admin actor may only touch resources whose owning
  * company is their ACTIVE company. Violations raise {@link ResourceScopeError}

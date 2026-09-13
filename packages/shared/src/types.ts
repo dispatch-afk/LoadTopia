@@ -1,7 +1,11 @@
 import type {
   CarrierOperatingStatus,
+  CarrierPreferenceType,
   CarrierVerificationStatus,
+  CompanyBlockStatus,
   CompanyType,
+  ConnectionEventType,
+  ConnectionStatus,
   DocumentReviewStatus,
   DocumentType,
   EquipmentType,
@@ -29,6 +33,19 @@ export interface AuthenticatedActor {
   role: UserRole;
   /** Membership id for the active company, if any. */
   membershipId: string | null;
+  /**
+   * Milestone 4: whether the active membership is the company's PRIMARY
+   * membership — the company-level authority tier ("primary/admin may
+   * manage") sits on top of role permissions, the same way facility scope
+   * sits on top of them for "where": role/permission decides WHAT a user may
+   * do, this decides whether they hold company-owner-level authority for
+   * sensitive relationship actions (accept/decline/disconnect a Connection,
+   * block/unblock, manage Carrier Groups/preferences, facility-scope admin).
+   * False for an ADMIN staff actor with no membership at all — `isAdmin()`/
+   * `isCompanyPrimaryAuthority()` treat platform staff as authorized
+   * regardless of this flag, so that case never matters in practice.
+   */
+  isPrimary: boolean;
 }
 
 export interface PublicUser {
@@ -549,4 +566,103 @@ export interface HealthReport {
     database: { status: HealthStatus; latencyMs: number | null; message?: string };
     providers: Record<string, { status: HealthStatus; isMock: boolean; message?: string }>;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Relationship network + facility scope (Milestone 4 Phase 2)
+//
+// PRIVACY: every view below is scoped to a single company's own perspective.
+// None of these types are ever returned to the counterparty company — see
+// each service's own scoping, not a shared "public" projection.
+// ---------------------------------------------------------------------------
+
+/** A carrier's own view of one of its Follows (private to the carrier). */
+export interface CarrierFollowView {
+  id: string;
+  shipperCompanyId: string;
+  shipperCompanyName: string;
+  createdAt: string;
+}
+
+/** A Connection from either participant's perspective — visible to BOTH
+ *  companies in the pair (never to anyone else). */
+export interface ConnectionView {
+  id: string;
+  companyAId: string;
+  companyBId: string;
+  /** The other company, resolved relative to the requesting actor. */
+  counterpartCompanyId: string;
+  counterpartCompanyName: string;
+  status: ConnectionStatus;
+  requesterCompanyId: string;
+  /** True when the current actor's company is NOT the requester — i.e. they
+   *  are the one who may accept/decline a PENDING request. */
+  awaitingMyResponse: boolean;
+  requestedAt: string;
+  respondedAt: string | null;
+  disconnectedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConnectionEventView {
+  id: string;
+  type: ConnectionEventType;
+  actorCompanyId: string | null;
+  createdAt: string;
+}
+
+export interface ConnectionDetailView extends ConnectionView {
+  events: ConnectionEventView[];
+}
+
+/** A shipper's own, PRIVATE preference on a carrier — never returned to the
+ *  carrier or any other company. */
+export interface CarrierPreferenceView {
+  carrierCompanyId: string;
+  carrierCompanyName: string;
+  preference: CarrierPreferenceType;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A blocking company's own, PRIVATE view of one of its Blocks — never
+ *  returned to the blocked company. */
+export interface CompanyBlockView {
+  id: string;
+  blockedCompanyId: string;
+  blockedCompanyName: string;
+  status: CompanyBlockStatus;
+  createdAt: string;
+  effectiveAt: string | null;
+  removedAt: string | null;
+}
+
+/** A shipper's own, PRIVATE Carrier Group member — the carrier is never told
+ *  it is in this (or any) group. */
+export interface CarrierGroupMemberView {
+  carrierCompanyId: string;
+  carrierCompanyName: string;
+  addedAt: string;
+}
+
+export interface CarrierGroupView {
+  id: string;
+  name: string;
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CarrierGroupDetailView extends CarrierGroupView {
+  members: CarrierGroupMemberView[];
+}
+
+/** A membership's facility scope. `companyWide` is true iff `locationIds` is
+ *  empty — the two are always consistent, `companyWide` is just the
+ *  self-documenting reading of "no rows". */
+export interface FacilityScopeView {
+  membershipId: string;
+  locationIds: string[];
+  companyWide: boolean;
 }

@@ -55,6 +55,24 @@ export const Permission = {
   // the sense LOAD_*_OWN means for a shipper.
   SHIPMENT_OPERATE_ASSIGNED: "shipment:operate:assigned",
 
+  // Relationship network (Milestone 4 Phase 2). Both are granted to every
+  // company member at the ROLE level — the finer "any active member vs.
+  // company-primary/admin" distinction is enforced by a SEPARATE policy check
+  // (`assertCompanyPrimaryAuthority`, keyed off `AuthenticatedActor.isPrimary`)
+  // layered on top of these permissions, the same way resource policies like
+  // `canModifyLoad` layer instance-level rules on top of a role permission.
+  //   NETWORK_REQUEST — any active member: Follow, Unfollow, request a
+  //     Connection.
+  //   NETWORK_MANAGE  — company-primary/admin only (enforced via
+  //     assertCompanyPrimaryAuthority, NOT by this permission alone): accept
+  //     / decline / disconnect a Connection; block / unblock; manage private
+  //     carrier preference; manage Carrier Groups.
+  NETWORK_REQUEST: "network:request",
+  NETWORK_MANAGE: "network:manage",
+  // Facility scope (Milestone 4 Phase 2): company-primary/admin only, via the
+  // same assertCompanyPrimaryAuthority gate as NETWORK_MANAGE.
+  FACILITY_SCOPE_MANAGE: "facility-scope:manage",
+
   // Platform staff
   ADMIN_PANEL: "admin:panel",
   ADMIN_USER_MANAGE: "admin:user:manage",
@@ -76,6 +94,12 @@ const COMMON_COMPANY_PERMISSIONS: readonly Permission[] = [
   Permission.LOCATION_MANAGE,
   Permission.EQUIPMENT_READ,
   Permission.EQUIPMENT_MANAGE,
+  // Relationship network + facility scope (M4 Phase 2): both company types
+  // may Follow/request Connections and (subject to the primary/admin policy
+  // gate) manage them — see the Permission definitions above.
+  Permission.NETWORK_REQUEST,
+  Permission.NETWORK_MANAGE,
+  Permission.FACILITY_SCOPE_MANAGE,
 ];
 
 const SHIPPER_PERMISSIONS: readonly Permission[] = [
