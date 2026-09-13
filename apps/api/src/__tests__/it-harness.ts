@@ -19,6 +19,10 @@ const TABLES = [
   "rate_confirmations",
   "load_check_ins",
   "load_events",
+  // Freight audience strategy (Milestone 4 Phase 4)
+  "load_audience_releases",
+  "load_audience_members",
+  "load_audience_strategies",
   "loads",
   "carrier_profiles",
   "market_rates",

@@ -58,6 +58,7 @@ export function buildLoadView(overrides: Partial<LoadView> = {}): LoadView {
     deliveredAt: null,
     completedAt: null,
     marketplace: { onMarket: false, activeOfferCount: 0, award: null },
+    audience: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     events: [],

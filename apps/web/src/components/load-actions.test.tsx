@@ -26,16 +26,13 @@ describe("LoadActions", () => {
     refresh.mockReset();
   });
 
-  it("posts a DRAFT load directly, without a confirmation step", async () => {
-    const user = userEvent.setup();
-    apiClient.mockResolvedValueOnce(undefined);
+  it("a postable DRAFT load links to Review & Post rather than posting directly", () => {
     const load = buildLoadView({ status: "DRAFT", availableTransitions: ["POSTED"] });
     render(<LoadActions load={load} />);
 
-    await user.click(screen.getByRole("button", { name: /post load/i }));
-
-    expect(apiClient).toHaveBeenCalledWith("/loads/load-1/post", expect.objectContaining({ method: "POST" }));
-    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    const link = screen.getByRole("link", { name: /review & post/i });
+    expect(link).toHaveAttribute("href", "/loads/load-1/review");
+    expect(apiClient).not.toHaveBeenCalled();
   });
 
   it("cancelling opens a reason prompt and only calls the API once a value is submitted", async () => {

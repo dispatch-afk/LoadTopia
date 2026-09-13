@@ -56,6 +56,7 @@ function loadView(overrides: Partial<LoadView> = {}): LoadView {
         assignedAt: "2026-09-02T12:00:00.000Z",
       },
     },
+    audience: null,
     createdAt: "2026-08-30T00:00:00.000Z",
     updatedAt: "2026-09-02T12:00:00.000Z",
     events: [],

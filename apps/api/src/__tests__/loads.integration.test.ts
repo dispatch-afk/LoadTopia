@@ -260,9 +260,15 @@ suite("loads (integration)", () => {
         where: { loadId: id },
         orderBy: { createdAt: "asc" },
       });
+      // Milestone 4 Phase 4: /post with no body defaults to the Marketplace
+      // audience strategy and now also records that explicit choice
+      // (LOAD_POSTED_TO_MARKETPLACE) alongside the existing status
+      // transition — a legitimate, documented contract evolution, not a
+      // regression (see loads.service.ts#post's doc comment).
       expect(events.map((e) => e.type)).toEqual([
         "CREATED",
         "STATUS_CHANGED",
+        "LOAD_POSTED_TO_MARKETPLACE",
         "STATUS_CHANGED",
         "STATUS_CHANGED",
       ]);
