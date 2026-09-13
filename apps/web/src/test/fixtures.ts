@@ -1,4 +1,11 @@
-import type { LoadView, LocationView, OfferThreadView } from "@loadtopia/shared";
+import type {
+  CarrierFollowView,
+  CompanyProfileView,
+  ConnectionView,
+  LoadView,
+  LocationView,
+  OfferThreadView,
+} from "@loadtopia/shared";
 
 function location(overrides: Partial<LocationView> = {}): LocationView {
   return {
@@ -95,6 +102,73 @@ export function buildOfferThreadView(overrides: Partial<OfferThreadView> = {}): 
     ],
     events: [],
     actions: { canCounter: true, canAccept: true, canReject: true, canWithdraw: false },
+    ...overrides,
+  };
+}
+
+export function buildConnectionView(overrides: Partial<ConnectionView> = {}): ConnectionView {
+  return {
+    id: "conn-1",
+    companyAId: "company-1",
+    companyBId: "company-2",
+    counterpartCompanyId: "company-2",
+    counterpartCompanyName: "Longhorn Transportation",
+    status: "PENDING",
+    requesterCompanyId: "company-2",
+    awaitingMyResponse: true,
+    requestedAt: "2026-01-01T00:00:00.000Z",
+    respondedAt: null,
+    disconnectedAt: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    sharedHistory: {
+      shipmentsTogether: 0,
+      completedShipments: 0,
+      activeShipments: 0,
+      lastWorkedTogether: null,
+    },
+    ...overrides,
+  };
+}
+
+export function buildCarrierFollowView(overrides: Partial<CarrierFollowView> = {}): CarrierFollowView {
+  return {
+    id: "follow-1",
+    shipperCompanyId: "company-1",
+    shipperCompanyName: "Acme Manufacturing",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function buildCompanyProfileView(overrides: Partial<CompanyProfileView> = {}): CompanyProfileView {
+  return {
+    id: "company-2",
+    type: "CARRIER",
+    name: "Longhorn Transportation",
+    city: "Austin",
+    state: "TX",
+    memberSince: "2026-01-01T00:00:00.000Z",
+    capabilities: {
+      legalName: "Longhorn Transportation LLC",
+      equipmentTypes: ["DRY_VAN"],
+      serviceAreaStates: ["TX"],
+    },
+    relationship: {
+      connection: null,
+      connectionEvents: [],
+      isFollowing: null,
+      preference: null,
+      blockStatus: null,
+      groups: null,
+    },
+    sharedHistory: {
+      shipmentsTogether: 0,
+      completedShipments: 0,
+      activeShipments: 0,
+      lastWorkedTogether: null,
+      recentLanes: [],
+    },
     ...overrides,
   };
 }
