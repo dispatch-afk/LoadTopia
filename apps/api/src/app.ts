@@ -21,6 +21,7 @@ import { locationsRoutes } from "./modules/locations/locations.routes";
 import { marketplaceRoutes } from "./modules/marketplace/marketplace.routes";
 import { blocksRoutes } from "./modules/network/blocks.routes";
 import { carrierGroupsRoutes } from "./modules/network/carrier-groups.routes";
+import { companyProfileRoutes } from "./modules/network/company-profile.routes";
 import { connectionsRoutes } from "./modules/network/connections.routes";
 import { facilityScopeRoutes } from "./modules/network/facility-scope.routes";
 import { followsRoutes } from "./modules/network/follows.routes";
@@ -86,6 +87,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       // Relationship network + facility scope (Milestone 4 Phase 2)
       await api.register(followsRoutes);
       await api.register(connectionsRoutes);
+      await api.register(companyProfileRoutes);
       await api.register(preferencesRoutes);
       await api.register(blocksRoutes);
       await api.register(carrierGroupsRoutes);

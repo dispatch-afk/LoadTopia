@@ -36,6 +36,7 @@ export function toMarketplaceListItem(
     // Derived from the PROVIDER NAME STORED ON THIS LOAD, never the currently
     // configured provider — mirrors loads.serializer.ts's toLoadView() exactly.
     routing: { provider: l.routingProvider, isMock: l.routingProvider === MOCK_PROVIDER_NAME },
+    shipperCompanyId: l.shipperCompanyId,
     shipperName: l.shipperCompany.name,
     postedAt: l.postedAt?.toISOString() ?? null,
     myThread,

@@ -15,8 +15,10 @@ import {
   type ConnectionDetailView,
   type ConnectionEventView,
   type ConnectionView,
+  type SharedHistorySummary,
 } from "@loadtopia/shared";
 import { badRequest, notFound } from "../../lib/errors";
+import { getSharedHistoryBatch, getSharedHistorySummary, ZERO_SHARED_HISTORY } from "./shared-history.query";
 
 type Tx = Prisma.TransactionClient;
 
@@ -24,7 +26,11 @@ type ConnectionRow = Prisma.CompanyConnectionGetPayload<{
   include: { companyA: { select: { name: true } }; companyB: { select: { name: true } } };
 }>;
 
-function toView(row: ConnectionRow, myCompanyId: string): ConnectionView {
+function toView(
+  row: ConnectionRow,
+  myCompanyId: string,
+  sharedHistory: SharedHistorySummary,
+): ConnectionView {
   const counterpartCompanyId = row.companyAId === myCompanyId ? row.companyBId : row.companyAId;
   const counterpartCompanyName =
     row.companyAId === myCompanyId ? row.companyB.name : row.companyA.name;
@@ -42,6 +48,7 @@ function toView(row: ConnectionRow, myCompanyId: string): ConnectionView {
     disconnectedAt: row.disconnectedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    sharedHistory,
   };
 }
 
@@ -160,7 +167,8 @@ export class ConnectionsService {
       return updated;
     });
 
-    return toView(row, myCompanyId);
+    const sharedHistory = await getSharedHistorySummary(this.prisma, myCompanyId, targetCompanyId);
+    return toView(row, myCompanyId, sharedHistory);
   }
 
   private async respond(
@@ -202,7 +210,9 @@ export class ConnectionsService {
       return updated;
     });
 
-    return toView(row, myCompanyId);
+    const counterpartId = row.companyAId === myCompanyId ? row.companyBId : row.companyAId;
+    const sharedHistory = await getSharedHistorySummary(this.prisma, myCompanyId, counterpartId);
+    return toView(row, myCompanyId, sharedHistory);
   }
 
   accept(actor: AuthenticatedActor, connectionId: string): Promise<ConnectionView> {
@@ -245,11 +255,18 @@ export class ConnectionsService {
       return updated;
     });
 
-    return toView(row, myCompanyId);
+    const counterpartId = row.companyAId === myCompanyId ? row.companyBId : row.companyAId;
+    const sharedHistory = await getSharedHistorySummary(this.prisma, myCompanyId, counterpartId);
+    return toView(row, myCompanyId, sharedHistory);
   }
 
-  /** Any active member may READ their own company's connections — reading
-   *  is not gated behind company-primary/admin authority, only managing is. */
+  /**
+   * Any active member may READ their own company's connections — reading is
+   * not gated behind company-primary/admin authority, only managing is.
+   *
+   * Shared-history enrichment is ONE batch call (3 grouped queries total),
+   * never one query per connection — see shared-history.query.ts.
+   */
   async list(actor: AuthenticatedActor): Promise<ConnectionView[]> {
     assertPermission(actor, Permission.NETWORK_REQUEST);
     const myCompanyId = actor.companyId!;
@@ -258,7 +275,17 @@ export class ConnectionsService {
       include,
       orderBy: { updatedAt: "desc" },
     });
-    return rows.map((r) => toView(r, myCompanyId));
+    const counterpartIds = rows.map((r) => (r.companyAId === myCompanyId ? r.companyBId : r.companyAId));
+    const historyByCounterpart = await getSharedHistoryBatch(
+      this.prisma,
+      myCompanyId,
+      actor.companyType!,
+      counterpartIds,
+    );
+    return rows.map((r) => {
+      const counterpartId = r.companyAId === myCompanyId ? r.companyBId : r.companyAId;
+      return toView(r, myCompanyId, historyByCounterpart.get(counterpartId) ?? ZERO_SHARED_HISTORY);
+    });
   }
 
   async getById(actor: AuthenticatedActor, connectionId: string): Promise<ConnectionDetailView> {
@@ -271,16 +298,20 @@ export class ConnectionsService {
     if (!row || (row.companyAId !== myCompanyId && row.companyBId !== myCompanyId)) {
       throw notFound("Connection not found");
     }
-    const events = await this.prisma.companyConnectionEvent.findMany({
-      where: { connectionId },
-      orderBy: { createdAt: "asc" },
-    });
+    const counterpartId = row.companyAId === myCompanyId ? row.companyBId : row.companyAId;
+    const [events, sharedHistory] = await Promise.all([
+      this.prisma.companyConnectionEvent.findMany({
+        where: { connectionId },
+        orderBy: { createdAt: "asc" },
+      }),
+      getSharedHistorySummary(this.prisma, myCompanyId, counterpartId),
+    ]);
     const eventViews: ConnectionEventView[] = events.map((e) => ({
       id: e.id,
       type: e.type,
       actorCompanyId: e.actorCompanyId,
       createdAt: e.createdAt.toISOString(),
     }));
-    return { ...toView(row, myCompanyId), events: eventViews };
+    return { ...toView(row, myCompanyId, sharedHistory), events: eventViews };
   }
 }
