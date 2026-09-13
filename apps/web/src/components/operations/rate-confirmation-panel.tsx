@@ -1,10 +1,6 @@
 import type { RateConfirmationView } from "@loadtopia/shared";
-import { fmtDateTime, titleCase } from "@/lib/format";
+import { fmtDateTime, fmtMoney, titleCase } from "@/lib/format";
 import { RateConfirmationDownload } from "./rate-confirmation-download";
-
-function money(v: string, currency: string) {
-  return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(v));
-}
 
 /**
  * Rate Confirmation section. `state` is the backend's truth:
@@ -38,7 +34,7 @@ export function RateConfirmationPanel({
       <dl className="grid grid-cols-2 gap-3 text-sm">
         <div>
           <dt className="text-xs font-medium uppercase tracking-wide text-muted">Agreed rate</dt>
-          <dd className="mt-0.5 text-ink">{money(rc.agreedRate, rc.currency)}</dd>
+          <dd className="mt-0.5 text-ink">{fmtMoney(rc.agreedRate, rc.currency)}</dd>
         </div>
         <div>
           <dt className="text-xs font-medium uppercase tracking-wide text-muted">Carrier</dt>

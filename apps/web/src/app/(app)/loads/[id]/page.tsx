@@ -31,14 +31,11 @@ import {
   fmtDateTime,
   fmtDriveTime,
   fmtMiles,
+  fmtMoney,
   fmtWeight,
   fmtWindow,
   titleCase,
 } from "@/lib/format";
-
-function money(v: string | null, currency = "USD") {
-  return v == null ? "—" : new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(v));
-}
 
 async function safe<T>(p: Promise<T>, fallback: T): Promise<T> {
   try {
@@ -193,7 +190,7 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
               {award && (
                 <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm">
                   <p className="font-medium text-emerald-900">
-                    Awarded to {award.carrierName} · {money(award.amount, award.currency)}
+                    Awarded to {award.carrierName} · {fmtMoney(award.amount, award.currency)}
                   </p>
                   <p className="text-xs text-emerald-800">
                     Awarded {fmtDateTime(award.awardedAt)}
@@ -228,9 +225,9 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
                 {pricing.map((p) => (
                   <div key={p.id} className="rounded-lg border border-line p-3 text-sm">
                     <p>
-                      <span className="font-medium">{money(p.midRate, p.currency)}</span>{" "}
+                      <span className="font-medium">{fmtMoney(p.midRate, p.currency)}</span>{" "}
                       <span className="text-muted">
-                        ({money(p.lowRate, p.currency)}–{money(p.highRate, p.currency)}) ·{" "}
+                        ({fmtMoney(p.lowRate, p.currency)}–{fmtMoney(p.highRate, p.currency)}) ·{" "}
                         {p.confidence} confidence
                       </span>
                     </p>

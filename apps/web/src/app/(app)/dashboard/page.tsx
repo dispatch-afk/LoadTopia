@@ -11,7 +11,8 @@ import { ApiError, apiServer } from "@/lib/api-server";
 import { requireMe, activeMembership, can } from "@/lib/session";
 import { Badge, Card, EmptyState, PageHeader } from "@/components/ui";
 import { LoadStatusBadge } from "@/components/load-status-badge";
-import { fmtDate, fmtDateTime, fmtMiles, titleCase } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtMiles, fmtMoney, titleCase } from "@/lib/format";
+import { OFFER_THREAD_STATUS_TONE } from "@/lib/status-tone";
 
 async function count(path: string): Promise<number> {
   const r = await apiServer<Paginated<unknown>>(path, { query: { pageSize: 1 } });
@@ -28,20 +29,6 @@ async function safe<T>(p: Promise<T>, fallback: T): Promise<T> {
     if (err instanceof ApiError && (err.status === 403 || err.status === 404)) return fallback;
     throw err;
   }
-}
-
-const THREAD_TONE: Record<string, "gray" | "green" | "amber" | "red" | "indigo"> = {
-  ACTIVE: "amber",
-  ACCEPTED: "green",
-  REJECTED: "red",
-  WITHDRAWN: "gray",
-  EXPIRED: "gray",
-};
-
-function money(v: string | null, currency = "USD") {
-  return v == null
-    ? "—"
-    : new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(v));
 }
 
 export default async function DashboardPage() {
@@ -268,7 +255,7 @@ async function CarrierDashboard({
               >
                 <div className="min-w-0">
                   <p className="font-medium text-ink">
-                    {money(t.currentAmount, t.currentCurrency)}
+                    {fmtMoney(t.currentAmount, t.currentCurrency)}
                   </p>
                   <p className="truncate text-sm text-muted">
                     {t.roundCount} round{t.roundCount === 1 ? "" : "s"} · updated{" "}
@@ -279,7 +266,7 @@ async function CarrierDashboard({
                   {t.awaitingMyResponse && t.status === "ACTIVE" && (
                     <Badge tone="indigo">Your move</Badge>
                   )}
-                  <Badge tone={THREAD_TONE[t.status] ?? "gray"}>{titleCase(t.status)}</Badge>
+                  <Badge tone={OFFER_THREAD_STATUS_TONE[t.status]}>{titleCase(t.status)}</Badge>
                 </div>
               </Link>
             ))}

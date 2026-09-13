@@ -24,7 +24,7 @@ import {
   viewerRoleForLoad,
 } from "@/lib/operations";
 import { fetchCheckIns, fetchDocuments, fetchRateConfirmation } from "@/lib/operations-data";
-import { fmtDateTime, fmtMiles, fmtWeight, fmtWindow, titleCase } from "@/lib/format";
+import { fmtDateTime, fmtMiles, fmtMoney, fmtWeight, fmtWindow, titleCase } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
@@ -45,12 +45,6 @@ const REASON_LABEL: Record<string, string> = {
   LOAD_ALREADY_AWARDED: "This load has already been awarded",
   LOAD_NOT_ON_MARKET: "This load is no longer on the marketplace",
 };
-
-function money(v: string | null, currency = "USD") {
-  return v == null
-    ? "—"
-    : new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(v));
-}
 
 const isScopeError = (err: unknown) =>
   err instanceof ApiError && (err.status === 404 || err.status === 403 || err.status === 400);
@@ -196,7 +190,7 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
                 <h2 className="mb-2 text-sm font-semibold text-ink">Booking</h2>
                 <p className="text-sm text-ink">
                   Booked at{" "}
-                  <span className="font-semibold">{money(award.amount, award.currency)}</span>
+                  <span className="font-semibold">{fmtMoney(award.amount, award.currency)}</span>
                 </p>
                 <p className="mt-1 text-xs text-muted">
                   Awarded {fmtDateTime(award.awardedAt)}
@@ -310,7 +304,7 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
                 <p className="text-sm text-ink">
                   Booked at{" "}
                   <span className="font-semibold">
-                    {money(load.marketplace.award.amount, load.marketplace.award.currency)}
+                    {fmtMoney(load.marketplace.award.amount, load.marketplace.award.currency)}
                   </span>
                 </p>
                 <p className="mt-1 text-xs text-muted">

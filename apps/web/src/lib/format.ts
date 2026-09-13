@@ -49,6 +49,13 @@ export function fmtWeight(lbs: number | null): string {
   return lbs == null ? "—" : `${lbs.toLocaleString()} lb`;
 }
 
+/** Shared money formatter — every screen that shows a rate/amount uses this,
+ *  rather than each hand-rolling its own `Intl.NumberFormat` call. */
+export function fmtMoney(v: string | number | null, currency = "USD"): string {
+  if (v == null) return "—";
+  return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(v));
+}
+
 export function titleCase(s: string): string {
   return s
     .toLowerCase()

@@ -2,21 +2,10 @@ import Link from "next/link";
 import type { OfferThreadSummary, Paginated } from "@loadtopia/shared";
 import { apiServer } from "@/lib/api-server";
 import { Badge, Card, EmptyState, PageHeader } from "@/components/ui";
-import { fmtDateTime, titleCase } from "@/lib/format";
+import { fmtDateTime, fmtMoney, titleCase } from "@/lib/format";
+import { OFFER_THREAD_STATUS_TONE } from "@/lib/status-tone";
 
 export const dynamic = "force-dynamic";
-
-const TONE: Record<string, "gray" | "green" | "amber" | "red" | "indigo"> = {
-  ACTIVE: "amber",
-  ACCEPTED: "green",
-  REJECTED: "red",
-  WITHDRAWN: "gray",
-  EXPIRED: "gray",
-};
-
-function money(v: string | null, currency = "USD") {
-  return v == null ? "—" : new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(v));
-}
 
 export default async function MyOffersPage({
   searchParams,
@@ -68,14 +57,14 @@ export default async function MyOffersPage({
                       </Link>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3">
-                      {money(t.currentAmount, t.currentCurrency)}
+                      {fmtMoney(t.currentAmount, t.currentCurrency)}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-muted">{t.roundCount}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-muted">
                       {fmtDateTime(t.updatedAt)}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3">
-                      <Badge tone={TONE[t.status] ?? "gray"}>{titleCase(t.status)}</Badge>
+                      <Badge tone={OFFER_THREAD_STATUS_TONE[t.status]}>{titleCase(t.status)}</Badge>
                       {t.awaitingMyResponse && t.status === "ACTIVE" && (
                         <span className="ml-1">
                           <Badge tone="indigo">Your move</Badge>
