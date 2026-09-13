@@ -159,3 +159,46 @@ export const OfferEventType = {
   EXPIRED: "EXPIRED",
 } as const;
 export type OfferEventType = (typeof OfferEventType)[keyof typeof OfferEventType];
+
+// --- Relationship network (Milestone 4 Phase 2) ----------------------------
+
+/** Mutable current state of a company-to-company Connection. There is no
+ *  stored "NONE" value — the absence of a `CompanyConnection` row IS "none". */
+export const ConnectionStatus = {
+  PENDING: "PENDING",
+  ACCEPTED: "ACCEPTED",
+  DECLINED: "DECLINED",
+  DISCONNECTED: "DISCONNECTED",
+} as const;
+export type ConnectionStatus = (typeof ConnectionStatus)[keyof typeof ConnectionStatus];
+
+/** Immutable connection lifecycle event log entry type. Deliberately no
+ *  separate RE_REQUESTED value — a REQUESTED event following a prior
+ *  DECLINED/DISCONNECTED event in the same connection's history already says
+ *  "this is a re-request" without a redundant type. */
+export const ConnectionEventType = {
+  REQUESTED: "REQUESTED",
+  ACCEPTED: "ACCEPTED",
+  DECLINED: "DECLINED",
+  DISCONNECTED: "DISCONNECTED",
+} as const;
+export type ConnectionEventType = (typeof ConnectionEventType)[keyof typeof ConnectionEventType];
+
+/** A shipper's PRIVATE preference on a carrier. Never a rating, never public,
+ *  never exposed to the carrier. */
+export const CarrierPreferenceType = {
+  PREFER: "PREFER",
+  DO_NOT_PREFER: "DO_NOT_PREFER",
+} as const;
+export type CarrierPreferenceType =
+  (typeof CarrierPreferenceType)[keyof typeof CarrierPreferenceType];
+
+/** Lifecycle of one CompanyBlock episode (one row per block "episode" —
+ *  unblocking does not delete the row, it moves to INACTIVE; a later re-block
+ *  between the same two companies in the same direction gets a NEW row). */
+export const CompanyBlockStatus = {
+  PENDING_ON_COMPLETION: "PENDING_ON_COMPLETION",
+  ACTIVE: "ACTIVE",
+  INACTIVE: "INACTIVE",
+} as const;
+export type CompanyBlockStatus = (typeof CompanyBlockStatus)[keyof typeof CompanyBlockStatus];
