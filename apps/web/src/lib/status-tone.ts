@@ -1,4 +1,4 @@
-import type { LoadStatus, OfferThreadStatus } from "@loadtopia/shared";
+import type { CompanyBlockStatus, ConnectionStatus, LoadStatus, OfferThreadStatus } from "@loadtopia/shared";
 
 /** The tone vocabulary `Badge` accepts. */
 export type BadgeTone = "gray" | "green" | "amber" | "red" | "indigo";
@@ -26,4 +26,27 @@ export const LOAD_STATUS_TONE: Record<LoadStatus, BadgeTone> = {
   DELIVERED: "amber",
   COMPLETED: "green",
   CANCELLED: "red",
+};
+
+/** Connection lifecycle status → badge tone. */
+export const CONNECTION_STATUS_TONE: Record<ConnectionStatus, BadgeTone> = {
+  PENDING: "amber",
+  ACCEPTED: "green",
+  DECLINED: "gray",
+  DISCONNECTED: "gray",
+};
+
+/** Connection lifecycle status → factual, non-editorial label. */
+export const CONNECTION_STATUS_LABEL: Record<ConnectionStatus, string> = {
+  PENDING: "Connection requested",
+  ACCEPTED: "Connected",
+  DECLINED: "Declined",
+  DISCONNECTED: "Disconnected",
+};
+
+/** Block episode status → badge tone (shown only to the blocking company). */
+export const BLOCK_STATUS_TONE: Record<CompanyBlockStatus, BadgeTone> = {
+  ACTIVE: "red",
+  PENDING_ON_COMPLETION: "amber",
+  INACTIVE: "gray",
 };

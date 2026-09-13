@@ -3,17 +3,22 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
-import type { MeResponse } from "@loadtopia/shared";
+import type { CompanyType, MeResponse } from "@loadtopia/shared";
 import { apiClient } from "@/lib/api-client";
 import { cn } from "@/lib/format";
+import { networkAreaLabel } from "@/lib/network";
 import { Spinner } from "./ui";
 
-/** Nav is filtered by the active company's permissions (server-authoritative). */
-const NAV: { href: string; label: string; permission?: string }[] = [
+/** Nav is filtered by the active company's permissions (server-authoritative).
+ *  `label` may be a function of the active company's type — e.g. the shared
+ *  /network route reads as "Carrier Network" for a shipper and
+ *  "Connections" for a carrier, without duplicating the implementation. */
+const NAV: { href: string; label: string | ((companyType: CompanyType | null) => string); permission?: string }[] = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/loads", label: "Loads", permission: "load:read:own" },
   { href: "/marketplace", label: "Marketplace", permission: "marketplace:browse" },
   { href: "/marketplace/offers", label: "My Offers", permission: "offer:create" },
+  { href: "/network", label: networkAreaLabel, permission: "network:request" },
   { href: "/locations", label: "Locations", permission: "location:read" },
   { href: "/equipment", label: "Equipment", permission: "equipment:read" },
   { href: "/settings/carrier-profile", label: "Carrier Profile", permission: "carrier:profile:manage" },
@@ -100,7 +105,7 @@ export function AppShell({ me, children }: { me: MeResponse; children: ReactNode
                     : "text-slate-600 hover:bg-slate-50 hover:text-ink",
                 )}
               >
-                {item.label}
+                {typeof item.label === "function" ? item.label(active?.companyType ?? null) : item.label}
               </Link>
             );
           })}
