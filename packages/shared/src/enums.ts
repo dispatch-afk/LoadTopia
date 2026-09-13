@@ -71,6 +71,16 @@ export const LoadEventType = {
   DOCUMENT_REVIEWED: "DOCUMENT_REVIEWED",
   DOCUMENT_REMOVED: "DOCUMENT_REMOVED",
   EXCEPTION_REPORTED: "EXCEPTION_REPORTED",
+  // --- Milestone 4 Phase 4 (freight audience strategy) ---
+  LOAD_POSTED_TO_MARKETPLACE: "LOAD_POSTED_TO_MARKETPLACE",
+  LOAD_POSTED_TO_NETWORK: "LOAD_POSTED_TO_NETWORK",
+  LOAD_POSTED_TO_SELECTED_CARRIERS: "LOAD_POSTED_TO_SELECTED_CARRIERS",
+  MARKETPLACE_RELEASE_SCHEDULED: "MARKETPLACE_RELEASE_SCHEDULED",
+  NETWORK_RELEASE_SCHEDULED: "NETWORK_RELEASE_SCHEDULED",
+  LOAD_RELEASED_TO_NETWORK: "LOAD_RELEASED_TO_NETWORK",
+  LOAD_RELEASED_TO_MARKETPLACE: "LOAD_RELEASED_TO_MARKETPLACE",
+  RELEASE_RESCHEDULED: "RELEASE_RESCHEDULED",
+  RELEASE_CANCELLED: "RELEASE_CANCELLED",
 } as const;
 export type LoadEventType = (typeof LoadEventType)[keyof typeof LoadEventType];
 
@@ -202,3 +212,32 @@ export const CompanyBlockStatus = {
   INACTIVE: "INACTIVE",
 } as const;
 export type CompanyBlockStatus = (typeof CompanyBlockStatus)[keyof typeof CompanyBlockStatus];
+
+// --- Freight audience strategy (Milestone 4 Phase 4) ------------------------
+
+/** The shipper's chosen distribution strategy, fixed at Review & Post. */
+export const LoadAudienceStrategyType = {
+  MARKETPLACE: "MARKETPLACE",
+  NETWORK_FIRST: "NETWORK_FIRST",
+  SELECTED_FIRST: "SELECTED_FIRST",
+} as const;
+export type LoadAudienceStrategyType =
+  (typeof LoadAudienceStrategyType)[keyof typeof LoadAudienceStrategyType];
+
+/** The current visibility boundary for a load's audience. Ordered
+ *  SELECTED < NETWORK < MARKETPLACE; only ever advances forward. */
+export const LoadAudienceStage = {
+  SELECTED: "SELECTED",
+  NETWORK: "NETWORK",
+  MARKETPLACE: "MARKETPLACE",
+} as const;
+export type LoadAudienceStage = (typeof LoadAudienceStage)[keyof typeof LoadAudienceStage];
+
+/** Lifecycle of one scheduled (or manually triggered) audience-widening
+ *  action. */
+export const LoadReleaseStatus = {
+  PENDING: "PENDING",
+  RELEASED: "RELEASED",
+  CANCELLED: "CANCELLED",
+} as const;
+export type LoadReleaseStatus = (typeof LoadReleaseStatus)[keyof typeof LoadReleaseStatus];

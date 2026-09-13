@@ -6,5 +6,6 @@ export * from "./load/load-number";
 export * from "./company/active-company";
 export * from "./marketplace";
 export * from "./network";
+export * from "./audience";
 export * from "./authz/permissions";
 export * from "./authz/policy";

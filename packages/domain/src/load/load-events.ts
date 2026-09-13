@@ -198,3 +198,122 @@ export function buildExceptionReportedEvent(params: {
     data: { category: params.category },
   };
 }
+
+// --- Milestone 4 Phase 4 (freight audience strategy) -----------------------
+//
+// Every payload below carries only FACTS about the audience action itself
+// (strategy, stage, counts, timing) — never a private Carrier Group name or
+// the identities of other selected carriers. The serializer that turns these
+// rows into a carrier-facing timeline is a separate, additional privacy
+// boundary (see loads.serializer.ts) — these builders are the server-side
+// audit record and may be slightly richer than what a carrier ever sees.
+
+export function buildLoadPostedEvent(params: {
+  loadId: string;
+  actorUserId: string | null;
+  actorCompanyId: string | null;
+  strategy: "MARKETPLACE" | "NETWORK_FIRST" | "SELECTED_FIRST";
+  audienceCount: number | null;
+}): LoadEventDraft {
+  const type =
+    params.strategy === "MARKETPLACE"
+      ? LoadEventType.LOAD_POSTED_TO_MARKETPLACE
+      : params.strategy === "NETWORK_FIRST"
+        ? LoadEventType.LOAD_POSTED_TO_NETWORK
+        : LoadEventType.LOAD_POSTED_TO_SELECTED_CARRIERS;
+  return {
+    loadId: params.loadId,
+    type,
+    fromStatus: null,
+    toStatus: null,
+    actorUserId: params.actorUserId,
+    actorCompanyId: params.actorCompanyId,
+    note: null,
+    data: {
+      strategy: params.strategy,
+      ...(params.audienceCount != null ? { audienceCount: params.audienceCount } : {}),
+    },
+  };
+}
+
+export function buildReleaseScheduledEvent(params: {
+  loadId: string;
+  actorUserId: string | null;
+  actorCompanyId: string | null;
+  toStage: "NETWORK" | "MARKETPLACE";
+  releaseAt: string;
+}): LoadEventDraft {
+  return {
+    loadId: params.loadId,
+    type:
+      params.toStage === "NETWORK"
+        ? LoadEventType.NETWORK_RELEASE_SCHEDULED
+        : LoadEventType.MARKETPLACE_RELEASE_SCHEDULED,
+    fromStatus: null,
+    toStatus: null,
+    actorUserId: params.actorUserId,
+    actorCompanyId: params.actorCompanyId,
+    note: null,
+    data: { toStage: params.toStage, releaseAt: params.releaseAt },
+  };
+}
+
+export function buildAudienceReleasedEvent(params: {
+  loadId: string;
+  actorUserId: string | null;
+  actorCompanyId: string | null;
+  toStage: "NETWORK" | "MARKETPLACE";
+  manual: boolean;
+}): LoadEventDraft {
+  return {
+    loadId: params.loadId,
+    type:
+      params.toStage === "NETWORK"
+        ? LoadEventType.LOAD_RELEASED_TO_NETWORK
+        : LoadEventType.LOAD_RELEASED_TO_MARKETPLACE,
+    fromStatus: null,
+    toStatus: null,
+    actorUserId: params.actorUserId,
+    actorCompanyId: params.actorCompanyId,
+    note: null,
+    data: { manual: params.manual },
+  };
+}
+
+export function buildReleaseRescheduledEvent(params: {
+  loadId: string;
+  actorUserId: string | null;
+  actorCompanyId: string | null;
+  toStage: "NETWORK" | "MARKETPLACE";
+  releaseAt: string;
+}): LoadEventDraft {
+  return {
+    loadId: params.loadId,
+    type: LoadEventType.RELEASE_RESCHEDULED,
+    fromStatus: null,
+    toStatus: null,
+    actorUserId: params.actorUserId,
+    actorCompanyId: params.actorCompanyId,
+    note: null,
+    data: { toStage: params.toStage, releaseAt: params.releaseAt },
+  };
+}
+
+export function buildReleaseCancelledEvent(params: {
+  loadId: string;
+  actorUserId: string | null;
+  actorCompanyId: string | null;
+  toStage: "NETWORK" | "MARKETPLACE";
+  reason: string;
+}): LoadEventDraft {
+  return {
+    loadId: params.loadId,
+    type: LoadEventType.RELEASE_CANCELLED,
+    fromStatus: null,
+    toStatus: null,
+    actorUserId: params.actorUserId,
+    actorCompanyId: params.actorCompanyId,
+    note: null,
+    data: { toStage: params.toStage, reason: params.reason },
+  };
+}

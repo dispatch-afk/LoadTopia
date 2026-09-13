@@ -9,7 +9,10 @@ import type {
   DocumentReviewStatus,
   DocumentType,
   EquipmentType,
+  LoadAudienceStage,
+  LoadAudienceStrategyType,
   LoadEventType,
+  LoadReleaseStatus,
   LoadStatus,
   MarketplaceEligibility,
   OfferEventType,
@@ -156,6 +159,17 @@ export interface LoadEventView {
   createdAt: string;
 }
 
+/** Lightweight per-row audience summary for the shipper Loads list — no live
+ *  network-membership count (that needs a cross-table query per row); just
+ *  what a single JOIN on the same list query already provides. The full
+ *  `LoadAudienceView` (with counts) lives on `LoadView` for the detail page. */
+export interface LoadListAudienceSummary {
+  strategy: LoadAudienceStrategyType;
+  currentStage: LoadAudienceStage;
+  /** The earliest still-PENDING scheduled release, if any. */
+  nextReleaseAt: string | null;
+}
+
 export interface LoadListItem {
   id: string;
   referenceNumber: string;
@@ -171,6 +185,9 @@ export interface LoadListItem {
   deliveryWindowStart: string | null;
   deliveryWindowEnd: string | null;
   miles: number | null;
+  /** Null for DRAFT and for a pre-Phase-4 posted load — see LoadAudienceView. */
+  audience: LoadListAudienceSummary | null;
+  activeOfferCount: number;
   createdAt: string;
 }
 
@@ -207,6 +224,10 @@ export interface LoadView {
   completedAt: string | null;
   /** Marketplace (Milestone 2): active-offer count + award outcome. */
   marketplace: LoadMarketplaceView;
+  /** Freight audience strategy (Milestone 4 Phase 4). Null for a DRAFT load
+   *  (no strategy chosen yet) and for a pre-Phase-4 posted load (legacy —
+   *  see LoadAudienceView's doc comment). */
+  audience: LoadAudienceView | null;
   createdAt: string;
   updatedAt: string;
   events: LoadEventView[];
@@ -224,6 +245,53 @@ export interface LoadMarketplaceView {
     awardedAt: string;
     assignedAt: string | null;
   } | null;
+}
+
+// --- Freight audience strategy (Milestone 4 Phase 4) ------------------------
+
+export interface LoadAudienceReleaseView {
+  id: string;
+  toStage: LoadAudienceStage;
+  status: LoadReleaseStatus;
+  scheduledAt: string;
+  executedAt: string | null;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+}
+
+/**
+ * The shipper's own view of a posted load's audience state — current stage,
+ * the strategy chosen at posting, and any pending scheduled release(s).
+ * `null` on `LoadView.audience` means either the load is still DRAFT, or it
+ * is a pre-Phase-4 load with no recorded strategy (legacy: full marketplace
+ * visibility, see the audience-visibility domain module).
+ */
+export interface LoadAudienceView {
+  strategy: LoadAudienceStrategyType;
+  currentStage: LoadAudienceStage;
+  autoReleaseDisabled: boolean;
+  /** SELECTED: the frozen snapshot size. NETWORK: the shipper's CURRENT
+   *  eligible ACCEPTED-connected carrier count. MARKETPLACE: null — not a
+   *  bounded, meaningful number to surface. */
+  audienceCount: number | null;
+  pendingReleases: LoadAudienceReleaseView[];
+}
+
+/**
+ * A non-authoritative preview of what Review & Post would produce, shown
+ * before the shipper commits. The final POST always revalidates everything
+ * at commit time — this preview is a convenience only, never trusted as
+ * final (see the audience-preview endpoint / Review & Post UI).
+ */
+export interface AudiencePreviewView {
+  strategy: LoadAudienceStrategyType;
+  /** Currently-eligible carrier count for the chosen strategy. Null for
+   *  MARKETPLACE — the eligible count is the whole (unbounded) board. */
+  eligibleCarrierCount: number | null;
+  /** For SELECTED_FIRST only: how many of the shipper's chosen carriers/
+   *  group members failed current revalidation (not ACCEPTED-connected, or
+   *  blocked) and would be silently dropped from the snapshot at posting. */
+  ineligibleSelectedCount: number;
 }
 
 // --- Operations (Milestone 3): manual check-ins ------------------------ ---
@@ -422,6 +490,10 @@ export interface MarketplaceLoadListItem {
   routing: { provider: string | null; isMock: boolean };
   shipperCompanyId: string;
   shipperName: string;
+  /** Factual only: does the viewing carrier currently hold an ACCEPTED
+   *  Connection with this shipper? Never implies "you were specially
+   *  selected" and never reveals the shipper's audience/release strategy. */
+  shipperIsConnected: boolean;
   postedAt: string | null;
   /** This carrier's negotiation on this load, if any. */
   myThread: OfferThreadSummary | null;
