@@ -168,6 +168,39 @@ enum OfferEventType {
 // (The Phase 0 `OfferStatus` enum + `LoadOffer` placeholder are replaced by the
 //  Milestone 2 OfferThread / OfferRound / OfferEvent model below.)
 
+// --- Relationship network (Milestone 4 Phase 2) ---------------------------
+
+/// Mutable current state of a company-to-company Connection. There is no
+/// stored "NONE" — the absence of a CompanyConnection row IS "none".
+enum ConnectionStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  DISCONNECTED
+}
+
+/// Immutable connection lifecycle event type. Deliberately no separate
+/// RE_REQUESTED value — see CompanyConnectionEvent's doc comment.
+enum ConnectionEventType {
+  REQUESTED
+  ACCEPTED
+  DECLINED
+  DISCONNECTED
+}
+
+/// A shipper's PRIVATE preference on a carrier. Never a rating, never public.
+enum CarrierPreferenceType {
+  PREFER
+  DO_NOT_PREFER
+}
+
+/// Lifecycle of one CompanyBlock episode.
+enum CompanyBlockStatus {
+  PENDING_ON_COMPLETION
+  ACTIVE
+  INACTIVE
+}
+
 // ---------------------------------------------------------------------------
 // Identity & organizations
 // ---------------------------------------------------------------------------
@@ -216,6 +249,20 @@ model Company {
   rateConfirmationsAsShipper RateConfirmation[] @relation("RateConfirmationShipper")
   rateConfirmationsAsCarrier RateConfirmation[] @relation("RateConfirmationCarrier")
 
+  // Relationship network (Milestone 4 Phase 2)
+  followsAsCarrier          CarrierFollow[]        @relation("FollowCarrier")
+  followsAsShipper          CarrierFollow[]        @relation("FollowShipper")
+  connectionsAsCompanyA     CompanyConnection[]    @relation("ConnectionCompanyA")
+  connectionsAsCompanyB     CompanyConnection[]    @relation("ConnectionCompanyB")
+  connectionsInitiated      CompanyConnection[]    @relation("ConnectionRequester")
+  connectionEvents          CompanyConnectionEvent[]
+  preferencesAsShipper      CarrierPreference[]    @relation("PreferenceShipper")
+  preferencesAsCarrier      CarrierPreference[]    @relation("PreferenceCarrier")
+  blocksAsBlocker           CompanyBlock[]         @relation("BlockBlocking")
+  blocksAsBlocked           CompanyBlock[]         @relation("BlockBlocked")
+  carrierGroups             CarrierGroup[]         @relation("CarrierGroupShipper")
+  carrierGroupMemberships   CarrierGroupMember[]   @relation("CarrierGroupMemberCarrier")
+
   @@unique([type, name])
   @@unique([loadNumberPrefix])
   @@index([type])
@@ -245,6 +292,14 @@ model User {
   uploadedDocuments   LoadDocument[]
   documentReviews     DocumentReview[]
 
+  // Relationship network (Milestone 4 Phase 2)
+  connectionsRequested   CompanyConnection[]      @relation("ConnectionRequestedByUser")
+  connectionsRespondedTo CompanyConnection[]      @relation("ConnectionRespondedByUser")
+  connectionEvents       CompanyConnectionEvent[]
+  carrierPreferencesSet  CarrierPreference[]
+  blocksCreated          CompanyBlock[]           @relation("BlockCreatedByUser")
+  blocksRemoved          CompanyBlock[]           @relation("BlockRemovedByUser")
+
   @@map("users")
 }
 
@@ -263,6 +318,10 @@ model Membership {
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  /// Facility scope (Milestone 4 Phase 2). No rows = company-wide access;
+  /// one or more rows = restricted to those Locations only.
+  facilityScope MembershipFacilityScope[]
 
   @@unique([userId, companyId])
   @@index([companyId])
@@ -321,6 +380,10 @@ model Location {
   company     Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
   originLoads Load[]  @relation("LoadOrigin")
   destLoads   Load[]  @relation("LoadDestination")
+
+  /// Facility scope (Milestone 4 Phase 2): memberships restricted to this
+  /// Location as one of their facilities.
+  facilityScopeFor MembershipFacilityScope[]
 
   @@index([companyId, isActive])
   @@index([state, city])
@@ -819,6 +882,223 @@ model RateConfirmation {
   awardedOfferRound OfferRound @relation("RateConfirmationAwardedRound", fields: [awardedOfferRoundId], references: [id], onDelete: Restrict)
 
   @@map("rate_confirmations")
+}
+
+// ---------------------------------------------------------------------------
+// Relationship network + facility scope (Milestone 4 Phase 2)
+//
+// Core invariant: RELATIONSHIP BELONGS TO COMPANY. FREIGHT VISIBILITY BELONGS
+// TO LOAD. None of the models below grant freight access by themselves — they
+// are read by later phases (audience/visibility, search, groups-based
+// selection) as additional inputs, never as a bypass of Load-based access.
+// ---------------------------------------------------------------------------
+
+/// A carrier company's PRIVATE, one-sided bookmark of a shipper company. No
+/// approval, no reverse visibility (the shipper never learns it was
+/// followed), grants no freight access. Hard-deleted on unfollow — this is
+/// not commercial history worth preserving forever, unlike a Connection.
+model CarrierFollow {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  carrierCompanyId String   @map("carrier_company_id") @db.Uuid
+  shipperCompanyId String   @map("shipper_company_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  carrierCompany Company @relation("FollowCarrier", fields: [carrierCompanyId], references: [id], onDelete: Cascade)
+  shipperCompany Company @relation("FollowShipper", fields: [shipperCompanyId], references: [id], onDelete: Cascade)
+
+  @@unique([carrierCompanyId, shipperCompanyId])
+  @@index([shipperCompanyId])
+  @@map("carrier_follows")
+}
+
+/// ONE row per company pair, for the LIFE of that pair — never re-inserted.
+/// `companyAId`/`companyBId` are stored in a DETERMINISTIC canonical order
+/// (companyAId < companyBId, enforced by a CHECK constraint and matched by
+/// `canonicalizeCompanyPair()` in @loadtopia/domain) so a Connection can never
+/// exist twice for the same pair in opposite "directions" — the DB-level
+/// backstop against a duplicate reverse-direction request race.
+///
+/// This row holds CURRENT lifecycle state only (PENDING/ACCEPTED/DECLINED/
+/// DISCONNECTED) and mutates as the relationship evolves, INCLUDING through a
+/// decline/disconnect and back to PENDING on re-request — reconnection is an
+/// UPDATE of this same row, never a new row (see CompanyConnectionEvent for
+/// the immutable full history of every transition this row has ever made).
+model CompanyConnection {
+  id     String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyAId String       @map("company_a_id") @db.Uuid
+  companyBId String       @map("company_b_id") @db.Uuid
+  status ConnectionStatus @default(PENDING)
+
+  /// Always equal to companyAId or companyBId (enforced by CHECK) — who
+  /// currently holds (or most recently held) the "requester" side.
+  requesterCompanyId String   @map("requester_company_id") @db.Uuid
+  requestedByUserId  String   @map("requested_by_user_id") @db.Uuid
+  requestedAt        DateTime @map("requested_at") @db.Timestamptz(6)
+
+  respondedByUserId String?   @map("responded_by_user_id") @db.Uuid
+  respondedAt       DateTime? @map("responded_at") @db.Timestamptz(6)
+
+  /// Set when ACCEPTED -> DISCONNECTED; cleared on a later re-request (the
+  /// row is no longer "currently disconnected" — the historical fact of that
+  /// disconnect lives forever in CompanyConnectionEvent regardless).
+  disconnectedAt DateTime? @map("disconnected_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  companyA          Company                  @relation("ConnectionCompanyA", fields: [companyAId], references: [id], onDelete: Restrict)
+  companyB          Company                  @relation("ConnectionCompanyB", fields: [companyBId], references: [id], onDelete: Restrict)
+  requesterCompany  Company                  @relation("ConnectionRequester", fields: [requesterCompanyId], references: [id], onDelete: Restrict)
+  requestedByUser   User                     @relation("ConnectionRequestedByUser", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  respondedByUser   User?                    @relation("ConnectionRespondedByUser", fields: [respondedByUserId], references: [id], onDelete: SetNull)
+  events            CompanyConnectionEvent[]
+
+  @@unique([companyAId, companyBId])
+  @@index([companyBId])
+  @@index([requesterCompanyId])
+  @@map("company_connections")
+}
+
+/// IMMUTABLE append-only connection lifecycle log — the full truthful history
+/// behind CompanyConnection.status, structurally identical in role to
+/// OfferEvent behind OfferThread.status. A DB trigger (reusing the existing
+/// loadtopia_reject_mutation function) rejects UPDATE/DELETE unconditionally.
+///
+/// No separate RE_REQUESTED type: a REQUESTED event that isn't the first
+/// event for its connectionId is self-evidently a re-request from the
+/// sequence itself — a redundant type would encode nothing an event-history
+/// reader can't already see.
+model CompanyConnectionEvent {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  connectionId   String              @map("connection_id") @db.Uuid
+  type           ConnectionEventType
+  actorUserId    String?             @map("actor_user_id") @db.Uuid
+  actorCompanyId String?             @map("actor_company_id") @db.Uuid
+  data           Json?
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  connection   CompanyConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  actor        User?             @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorCompany Company?          @relation(fields: [actorCompanyId], references: [id], onDelete: SetNull)
+
+  @@index([connectionId, createdAt])
+  @@map("company_connection_events")
+}
+
+/// A shipper company's PRIVATE preference on a carrier company — never a
+/// rating, never public, never exposed to the carrier. Current value is
+/// mutable (upsert semantics); no history table, matching the product spec's
+/// framing of this as an operational note, not commercial/audit history.
+model CarrierPreference {
+  id               String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shipperCompanyId String                @map("shipper_company_id") @db.Uuid
+  carrierCompanyId String                @map("carrier_company_id") @db.Uuid
+  preference       CarrierPreferenceType
+  setByUserId      String                @map("set_by_user_id") @db.Uuid
+  createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  shipperCompany Company @relation("PreferenceShipper", fields: [shipperCompanyId], references: [id], onDelete: Cascade)
+  carrierCompany Company @relation("PreferenceCarrier", fields: [carrierCompanyId], references: [id], onDelete: Cascade)
+  setByUser      User    @relation(fields: [setByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([shipperCompanyId, carrierCompanyId])
+  @@index([carrierCompanyId])
+  @@map("carrier_preferences")
+}
+
+/// ONE row per block "episode" — PRIVATE to the blocking company; the blocked
+/// company is never notified and never sees this row. Unblocking moves this
+/// SAME row to INACTIVE (history preserved, never deleted); a LATER re-block
+/// between the same two companies in the same direction gets a NEW row (the
+/// partial unique index below only forbids more than one CURRENTLY-in-force
+/// row per direction — the same pattern as offer_threads_one_accepted_per_load).
+/// Blocking is directional: A blocking B is a separate fact from B blocking A.
+model CompanyBlock {
+  id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  blockingCompanyId String             @map("blocking_company_id") @db.Uuid
+  blockedCompanyId  String             @map("blocked_company_id") @db.Uuid
+  status            CompanyBlockStatus @default(ACTIVE)
+
+  createdByUserId String    @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// When the block actually took/takes effect for future-interaction
+  /// purposes: immediately for ACTIVE, or the moment a PENDING_ON_COMPLETION
+  /// episode resolves to ACTIVE once the freight that was keeping it pending
+  /// ends.
+  effectiveAt     DateTime? @map("effective_at") @db.Timestamptz(6)
+
+  removedByUserId String?   @map("removed_by_user_id") @db.Uuid
+  removedAt       DateTime? @map("removed_at") @db.Timestamptz(6)
+
+  blockingCompany Company @relation("BlockBlocking", fields: [blockingCompanyId], references: [id], onDelete: Restrict)
+  blockedCompany  Company @relation("BlockBlocked", fields: [blockedCompanyId], references: [id], onDelete: Restrict)
+  createdByUser   User    @relation("BlockCreatedByUser", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  removedByUser   User?   @relation("BlockRemovedByUser", fields: [removedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([blockingCompanyId, status])
+  @@index([blockedCompanyId, status])
+  @@map("company_blocks")
+}
+
+/// A shipper company's PRIVATE, manual collection of its own connected
+/// carriers (e.g. "Texas Dry Van", "Backup Capacity"). The carrier never sees
+/// the group's name or its own membership in it. `normalizedName` (trimmed,
+/// lower-cased at the application layer) backs a case-insensitive-equivalent
+/// uniqueness constraint without requiring the citext extension.
+model CarrierGroup {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shipperCompanyId String   @map("shipper_company_id") @db.Uuid
+  name             String
+  normalizedName   String   @map("normalized_name")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  shipperCompany Company              @relation("CarrierGroupShipper", fields: [shipperCompanyId], references: [id], onDelete: Cascade)
+  members        CarrierGroupMember[]
+
+  @@unique([shipperCompanyId, normalizedName])
+  @@map("carrier_groups")
+}
+
+/// Join of CarrierGroup <-> carrier Company. Removing a member does not
+/// disconnect the carrier; deleting the group (Cascade) does not either —
+/// group membership is not commercial history, unlike a Connection.
+model CarrierGroupMember {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId          String   @map("group_id") @db.Uuid
+  carrierCompanyId String   @map("carrier_company_id") @db.Uuid
+  addedAt          DateTime @default(now()) @map("added_at") @db.Timestamptz(6)
+
+  group          CarrierGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  carrierCompany Company      @relation("CarrierGroupMemberCarrier", fields: [carrierCompanyId], references: [id], onDelete: Restrict)
+
+  @@unique([groupId, carrierCompanyId])
+  @@index([carrierCompanyId])
+  @@map("carrier_group_members")
+}
+
+/// Facility scope (Milestone 4 Phase 2): an ADDITIONAL restriction layered on
+/// top of role/permission, never a replacement for it. A membership with NO
+/// rows here has company-wide access (the default, and the only state a
+/// single-location company ever needs); one or more rows restrict that
+/// membership to acting only where a matching Location is the origin or
+/// destination. Both membershipId and locationId must belong to the SAME
+/// company — the database cannot express that cross-table invariant via FK
+/// alone, so it is enforced in the service layer inside a transaction (see
+/// FacilityScopeService) and covered by an integration test.
+model MembershipFacilityScope {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  membershipId String   @map("membership_id") @db.Uuid
+  locationId   String   @map("location_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  location   Location   @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  @@unique([membershipId, locationId])
+  @@index([locationId])
+  @@map("membership_facility_scope")
 }
 
 // ---------------------------------------------------------------------------
