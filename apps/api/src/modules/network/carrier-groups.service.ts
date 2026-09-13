@@ -14,6 +14,8 @@ import {
   type CarrierGroupView,
   CompanyBlockStatus,
   CompanyType,
+  ConnectionStatus,
+  type EligibleGroupCarrierView,
 } from "@loadtopia/shared";
 import { conflict, forbidden, notFound } from "../../lib/errors";
 
@@ -197,5 +199,59 @@ export class CarrierGroupsService {
     assertCompanyPrimaryAuthority(actor);
     await this.assertOwnedGroup(actor, groupId);
     await this.prisma.carrierGroupMember.deleteMany({ where: { groupId, carrierCompanyId } });
+  }
+
+  /**
+   * The shipper's own ACCEPTED-connected carriers not already in this
+   * group — backs the "add carrier" control so the client never has to
+   * re-derive eligibility from raw connection/block state itself (which
+   * risks drifting from the server's actual rule in canAddCarrierToGroup).
+   */
+  async listEligibleCarriers(
+    actor: AuthenticatedActor,
+    groupId: string,
+  ): Promise<EligibleGroupCarrierView[]> {
+    assertPermission(actor, Permission.NETWORK_REQUEST);
+    const myCompanyId = actor.companyId!;
+    await this.assertOwnedGroup(actor, groupId);
+
+    const [connections, existingMembers, blocks] = await Promise.all([
+      this.prisma.companyConnection.findMany({
+        where: {
+          status: ConnectionStatus.ACCEPTED,
+          OR: [{ companyAId: myCompanyId }, { companyBId: myCompanyId }],
+        },
+        include: {
+          companyA: { select: { id: true, name: true, type: true } },
+          companyB: { select: { id: true, name: true, type: true } },
+        },
+      }),
+      this.prisma.carrierGroupMember.findMany({ where: { groupId }, select: { carrierCompanyId: true } }),
+      // Every in-force block touching this company, either direction — kept
+      // consistent with canAddCarrierToGroup()'s actual rule so this list
+      // never offers a carrier that addMember would then reject.
+      this.prisma.companyBlock.findMany({
+        where: {
+          status: { in: [CompanyBlockStatus.ACTIVE, CompanyBlockStatus.PENDING_ON_COMPLETION] },
+          OR: [{ blockingCompanyId: myCompanyId }, { blockedCompanyId: myCompanyId }],
+        },
+        select: { blockingCompanyId: true, blockedCompanyId: true },
+      }),
+    ]);
+
+    const existingIds = new Set(existingMembers.map((m) => m.carrierCompanyId));
+    const blockedCompanyIds = new Set(
+      blocks.map((b) => (b.blockingCompanyId === myCompanyId ? b.blockedCompanyId : b.blockingCompanyId)),
+    );
+    const eligible: EligibleGroupCarrierView[] = [];
+    for (const c of connections) {
+      const isCompanyA = c.companyAId === myCompanyId;
+      const counterpart = isCompanyA ? c.companyB : c.companyA;
+      const counterpartId = isCompanyA ? c.companyBId : c.companyAId;
+      if (counterpart.type !== CompanyType.CARRIER) continue;
+      if (existingIds.has(counterpartId) || blockedCompanyIds.has(counterpartId)) continue;
+      eligible.push({ companyId: counterpartId, companyName: counterpart.name });
+    }
+    return eligible;
   }
 }

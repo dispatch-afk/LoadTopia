@@ -33,6 +33,15 @@ export async function carrierGroupsRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  app.get(
+    "/carrier-groups/:id/eligible-carriers",
+    { preHandler: [app.requireCompanyPermission(Permission.NETWORK_REQUEST)] },
+    async (request) => {
+      const { id } = idParam.parse(request.params);
+      return { data: await service.listEligibleCarriers(request.currentUser!, id) };
+    },
+  );
+
   app.post(
     "/carrier-groups",
     { preHandler: [app.requireCompanyPermission(Permission.NETWORK_MANAGE)] },
