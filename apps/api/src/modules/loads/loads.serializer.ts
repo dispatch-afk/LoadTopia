@@ -5,8 +5,10 @@ import {
   nextLoadStatuses,
 } from "@loadtopia/domain";
 import {
+  type LoadAudienceView,
   type LoadEventView,
   type LoadListItem,
+  LoadReleaseStatus,
   LoadStatus,
   type LoadView,
 } from "@loadtopia/shared";
@@ -25,6 +27,22 @@ export function metersToMiles(meters: number | null): number | null {
 export const loadListInclude = {
   origin: { select: { city: true, state: true } },
   destination: { select: { city: true, state: true } },
+  offerThreads: { where: { status: "ACTIVE" }, select: { id: true } },
+  // Freight audience strategy (Milestone 4 Phase 4) — a lightweight summary
+  // only: strategy/stage plus the single earliest pending release, all from
+  // this SAME query via the relation, never a per-row follow-up query.
+  audienceStrategy: {
+    select: {
+      strategy: true,
+      currentStage: true,
+      releases: {
+        where: { status: "PENDING" },
+        orderBy: { scheduledAt: "asc" },
+        take: 1,
+        select: { scheduledAt: true },
+      },
+    },
+  },
 } satisfies Prisma.LoadInclude;
 
 export const loadDetailInclude = {
@@ -50,6 +68,14 @@ export const loadDetailInclude = {
     orderBy: { createdAt: "asc" },
     include: { actor: { select: { firstName: true, lastName: true } } },
   },
+  // Freight audience strategy (Milestone 4 Phase 4). Absent (null) for a
+  // DRAFT load and for a pre-Phase-4 posted load — see LoadAudienceView.
+  // `audienceMembers` fetches EVERY snapshot row the load has ever had
+  // (a load may carry both a SELECTED-stage and a later NETWORK-stage
+  // snapshot) — `toAudienceView` picks the count matching the CURRENT
+  // stage; a small, bounded list, never worth a second round trip.
+  audienceStrategy: { include: { releases: { orderBy: { scheduledAt: "asc" } } } },
+  audienceMembers: { select: { stage: true } },
 } satisfies Prisma.LoadInclude;
 
 type LoadListRow = Prisma.LoadGetPayload<{ include: typeof loadListInclude }>;
@@ -71,6 +97,14 @@ export function toLoadListItem(l: LoadListRow): LoadListItem {
     deliveryWindowStart: l.deliveryWindowStart?.toISOString() ?? null,
     deliveryWindowEnd: l.deliveryWindowEnd?.toISOString() ?? null,
     miles: metersToMiles(l.distanceMeters),
+    audience: l.audienceStrategy
+      ? {
+          strategy: l.audienceStrategy.strategy,
+          currentStage: l.audienceStrategy.currentStage,
+          nextReleaseAt: l.audienceStrategy.releases[0]?.scheduledAt.toISOString() ?? null,
+        }
+      : null,
+    activeOfferCount: l.offerThreads.length,
     createdAt: l.createdAt.toISOString(),
   };
 }
@@ -105,6 +139,35 @@ function transitionActor(from: LoadStatus, to: LoadStatus): "shipper" | "carrier
   if (from === LoadStatus.PICKED_UP && to === LoadStatus.IN_TRANSIT) return "carrier"; // /in-transit
   if (from === LoadStatus.IN_TRANSIT && to === LoadStatus.DELIVERED) return "carrier"; // /deliver
   return null;
+}
+
+function toAudienceView(l: LoadDetailRow): LoadAudienceView | null {
+  const strategy = l.audienceStrategy;
+  if (!strategy) return null;
+  return {
+    strategy: strategy.strategy,
+    currentStage: strategy.currentStage,
+    autoReleaseDisabled: strategy.autoReleaseDisabled,
+    // The frozen snapshot count AT THE CURRENT STAGE — a load may carry an
+    // older SELECTED-stage snapshot from before a Network release; that
+    // count is never shown once currentStage has moved past it. Null for
+    // MARKETPLACE, which has no finite snapshot.
+    audienceCount:
+      strategy.currentStage === "MARKETPLACE"
+        ? null
+        : l.audienceMembers.filter((m) => m.stage === strategy.currentStage).length,
+    pendingReleases: strategy.releases
+      .filter((r) => r.status === LoadReleaseStatus.PENDING)
+      .map((r) => ({
+        id: r.id,
+        toStage: r.toStage,
+        status: r.status,
+        scheduledAt: r.scheduledAt.toISOString(),
+        executedAt: r.executedAt?.toISOString() ?? null,
+        cancelledAt: r.cancelledAt?.toISOString() ?? null,
+        cancelReason: r.cancelReason,
+      })),
+  };
 }
 
 export function toLoadView(l: LoadDetailRow, viewerRole: LoadViewerRole): LoadView {
@@ -185,6 +248,7 @@ export function toLoadView(l: LoadDetailRow, viewerRole: LoadViewerRole): LoadVi
             }
           : null,
     },
+    audience: toAudienceView(l),
     createdAt: l.createdAt.toISOString(),
     updatedAt: l.updatedAt.toISOString(),
     events: l.events.map(toEventView),

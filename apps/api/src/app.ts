@@ -17,6 +17,7 @@ import { documentsRoutes } from "./modules/documents/documents.routes";
 import { equipmentRoutes } from "./modules/equipment/equipment.routes";
 import { healthRoutes } from "./modules/health/health.routes";
 import { loadsRoutes } from "./modules/loads/loads.routes";
+import { startReleasePoller } from "./modules/loads/release-engine";
 import { locationsRoutes } from "./modules/locations/locations.routes";
 import { marketplaceRoutes } from "./modules/marketplace/marketplace.routes";
 import { blocksRoutes } from "./modules/network/blocks.routes";
@@ -95,6 +96,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     },
     { prefix: "/api" },
   );
+
+  // Freight audience release engine (Milestone 4 Phase 4). DB rows remain
+  // the source of truth throughout — this poller only ever claims and
+  // executes PENDING releases that are already due; a process restart loses
+  // nothing (see release-engine.ts). Not started under `test` — the
+  // integration suite drives release execution explicitly via
+  // `processDueReleases()` so it stays deterministic and doesn't leak an
+  // interval timer per test-app instance.
+  if (env.NODE_ENV !== "test") {
+    const poller = startReleasePoller(app.prisma, app.log);
+    app.addHook("onClose", async () => poller.stop());
+  }
 
   return app;
 }

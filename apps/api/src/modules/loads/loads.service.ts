@@ -17,11 +17,13 @@ import {
 } from "@loadtopia/domain";
 import { MOCK_PROVIDER_NAME, type ProviderRegistry } from "@loadtopia/providers";
 import {
+  type AudiencePreviewInput,
   type AuthenticatedActor,
   type CreateLoadInput,
   type ListLoadsQuery,
   LoadStatus,
   type LoadListItem,
+  type PostLoadAudienceInput,
   type LoadView,
   type Paginated,
   type UpdateLoadInput,
@@ -30,6 +32,8 @@ import { AppError, badRequest, conflict, notFound } from "../../lib/errors";
 import { appendLoadEvent, atomicLoadTransition } from "../../lib/load-lifecycle";
 import { paginate, toSkipTake } from "../../lib/pagination";
 import { PricingService } from "../pricing/pricing.service";
+import { AudienceService } from "./audience.service";
+import { cancelPendingReleases } from "./release-engine";
 import { loadDetailInclude, loadListInclude, toLoadListItem, toLoadView } from "./loads.serializer";
 import { computeRouting } from "./routing";
 
@@ -37,6 +41,7 @@ const parseDate = (v: string | null | undefined): Date | null => (v == null ? nu
 
 export class LoadsService {
   private readonly pricing: PricingService;
+  private readonly audience: AudienceService;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -44,6 +49,7 @@ export class LoadsService {
     private readonly log: { warn: (obj: unknown, msg: string) => void },
   ) {
     this.pricing = new PricingService(prisma, providers.pricing);
+    this.audience = new AudienceService(prisma);
   }
 
   private async loadDetail(id: string, actor: AuthenticatedActor): Promise<LoadView> {
@@ -51,7 +57,10 @@ export class LoadsService {
       where: { id },
       include: loadDetailInclude,
     });
-    // `availableTransitions` is actor-aware — see loads.serializer.
+    // `availableTransitions` is actor-aware — see loads.serializer. Audience
+    // counts (both SELECTED and NETWORK) now come from the frozen snapshot
+    // already in `row.audienceMembers` — no live network query needed here
+    // (review correction #2: NETWORK membership is snapshotted, not live).
     return toLoadView(row, loadViewerRole(actor, row));
   }
 
@@ -308,8 +317,25 @@ export class LoadsService {
     });
   }
 
+  /** Non-authoritative Review & Post preview — see AudienceService#preview. */
+  async previewAudience(actor: AuthenticatedActor, id: string, input: AudiencePreviewInput) {
+    return this.audience.preview(actor, id, input);
+  }
+
   // -- lifecycle transitions --------------------------------------------
-  async post(actor: AuthenticatedActor, id: string): Promise<LoadView> {
+  /**
+   * Review & Post: DRAFT -> POSTED plus the shipper's audience strategy,
+   * applied atomically in one transaction (§17). `input` defaults to
+   * `{ strategy: "MARKETPLACE" }` at the route layer when the request body
+   * is omitted — the exact historical immediate-post behavior — so this
+   * stays backward compatible while the web Review & Post flow always sends
+   * an explicit choice.
+   */
+  async post(
+    actor: AuthenticatedActor,
+    id: string,
+    input: PostLoadAudienceInput,
+  ): Promise<LoadView> {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
@@ -374,14 +400,28 @@ export class LoadsService {
         );
       }
 
+      const now = new Date();
       await atomicLoadTransition(tx, {
         id,
         from: fresh.status,
         to: LoadStatus.POSTED,
         actorUserId: actor.userId,
         actorCompanyId: actor.companyId,
-        extra: { postedAt: new Date() },
+        extra: { postedAt: now },
       });
+
+      // Audience strategy is resolved and persisted in this SAME transaction,
+      // under the SAME row lock — a validation failure here (e.g. an empty
+      // Selected/Network audience) rolls back the whole POST, leaving the
+      // load in DRAFT with no partial audience state (§17).
+      await this.audience.applyAudienceAtPosting(
+        tx,
+        actor,
+        id,
+        fresh.shipperCompanyId,
+        input,
+        now,
+      );
     });
 
     // Capture an immutable pricing snapshot at post time so the price the
@@ -613,15 +653,20 @@ export class LoadsService {
     if (!canCancelLoad(load.status)) {
       assertLoadTransition(load.status, LoadStatus.CANCELLED); // throws a precise error
     }
-    await this.transition(
-      id,
-      load.status,
-      LoadStatus.CANCELLED,
-      actor.userId,
-      actor.companyId,
-      { cancelledAt: new Date() },
-      reason,
-    );
+    await this.prisma.$transaction(async (tx) => {
+      await atomicLoadTransition(tx, {
+        id,
+        from: load.status,
+        to: LoadStatus.CANCELLED,
+        actorUserId: actor.userId,
+        actorCompanyId: actor.companyId,
+        extra: { cancelledAt: new Date() },
+        note: reason,
+      });
+      // A cancelled load must never widen its audience later — cancel any
+      // pending scheduled release in the SAME transaction (§7).
+      await cancelPendingReleases(tx, id, "load_cancelled", actor.userId, actor.companyId);
+    });
     return this.loadDetail(id, actor);
   }
 

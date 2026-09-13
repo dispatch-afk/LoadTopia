@@ -1,7 +1,12 @@
 import {
+  audiencePreviewSchema,
   cancelLoadSchema,
   createLoadSchema,
   listLoadsSchema,
+  LoadAudienceStrategyType,
+  postLoadAudienceSchema,
+  releaseNowSchema,
+  rescheduleReleaseSchema,
   updateLoadSchema,
   uuidSchema,
 } from "@loadtopia/shared";
@@ -10,9 +15,11 @@ import { z } from "zod";
 import { writeAudit } from "../../lib/audit";
 import { assertResourceScope } from "../../lib/scoped-resource";
 import { RateConfirmationService } from "../rate-confirmations/rate-confirmation.service";
+import { cancelScheduledRelease, releaseNow, rescheduleRelease } from "./release-engine";
 import { LoadsService } from "./loads.service";
 
 const idParam = z.object({ id: uuidSchema });
+const releaseIdParam = z.object({ id: uuidSchema, releaseId: uuidSchema });
 
 export async function loadsRoutes(app: FastifyInstance): Promise<void> {
   const service = new LoadsService(app.prisma, app.providers, app.log);
@@ -75,18 +82,96 @@ export async function loadsRoutes(app: FastifyInstance): Promise<void> {
     return null;
   });
 
+  // Review & Post. An omitted body defaults to `{ strategy: "MARKETPLACE" }`
+  // — the exact historical immediate-post behavior — so this stays backward
+  // compatible while the web Review & Post flow always sends an explicit
+  // audience choice (see loads.service.ts#post's doc comment).
   app.post("/loads/:id/post", { preHandler: [app.requireActiveCompany] }, async (request) => {
     const actor = request.currentUser!;
     const { id } = idParam.parse(request.params);
-    const load = await service.post(actor, id);
+    const input = postLoadAudienceSchema.parse(
+      request.body ?? { strategy: LoadAudienceStrategyType.MARKETPLACE },
+    );
+    const load = await service.post(actor, id, input);
     await writeAudit(app.prisma, request, {
       actorUserId: actor.userId,
       action: "load.post",
       entityType: "load",
       entityId: id,
+      data: { strategy: input.strategy },
     });
     return load;
   });
+
+  // Non-authoritative Review & Post preview (§35 Preview vs Commit) — never
+  // trusted as final; /post revalidates everything fresh at commit time.
+  app.post(
+    "/loads/:id/audience-preview",
+    { preHandler: [app.requireActiveCompany] },
+    async (request) => {
+      const actor = request.currentUser!;
+      const { id } = idParam.parse(request.params);
+      const input = audiencePreviewSchema.parse(request.body);
+      return service.previewAudience(actor, id, input);
+    },
+  );
+
+  // Load detail / coverage workspace: manage a pending scheduled release.
+  app.post(
+    "/loads/:id/release-now",
+    { preHandler: [app.requireActiveCompany] },
+    async (request) => {
+      const actor = request.currentUser!;
+      const { id } = idParam.parse(request.params);
+      const { target } = releaseNowSchema.parse(request.body);
+      await releaseNow(app.prisma, actor, id, target);
+      await writeAudit(app.prisma, request, {
+        actorUserId: actor.userId,
+        action: "load.audience.release_now",
+        entityType: "load",
+        entityId: id,
+        data: { target },
+      });
+      return service.getById(actor, id);
+    },
+  );
+
+  app.post(
+    "/loads/:id/audience-releases/:releaseId/reschedule",
+    { preHandler: [app.requireActiveCompany] },
+    async (request) => {
+      const actor = request.currentUser!;
+      const { id, releaseId } = releaseIdParam.parse(request.params);
+      const { releaseAt } = rescheduleReleaseSchema.parse(request.body);
+      await rescheduleRelease(app.prisma, actor, id, releaseId, new Date(releaseAt));
+      await writeAudit(app.prisma, request, {
+        actorUserId: actor.userId,
+        action: "load.audience.release_rescheduled",
+        entityType: "load",
+        entityId: id,
+        data: { releaseId, releaseAt },
+      });
+      return service.getById(actor, id);
+    },
+  );
+
+  app.post(
+    "/loads/:id/audience-releases/:releaseId/cancel",
+    { preHandler: [app.requireActiveCompany] },
+    async (request) => {
+      const actor = request.currentUser!;
+      const { id, releaseId } = releaseIdParam.parse(request.params);
+      await cancelScheduledRelease(app.prisma, actor, id, releaseId);
+      await writeAudit(app.prisma, request, {
+        actorUserId: actor.userId,
+        action: "load.audience.release_cancelled",
+        entityType: "load",
+        entityId: id,
+        data: { releaseId },
+      });
+      return service.getById(actor, id);
+    },
+  );
 
   app.post("/loads/:id/unpost", { preHandler: [app.requireActiveCompany] }, async (request) => {
     const actor = request.currentUser!;
