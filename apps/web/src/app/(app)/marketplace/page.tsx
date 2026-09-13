@@ -114,7 +114,14 @@ export default async function MarketplacePage({
                         </div>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-muted">{l.shipperName}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-muted">
+                      {l.shipperName}
+                      {l.shipperIsConnected && (
+                        <span className="ml-1.5">
+                          <Badge tone="indigo">Connected</Badge>
+                        </span>
+                      )}
+                    </td>
                     <td className="whitespace-nowrap px-4 py-3 text-muted">{fmtDate(l.postedAt)}</td>
                     <td className="whitespace-nowrap px-4 py-3">
                       {l.myThread ? (

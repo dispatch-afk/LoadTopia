@@ -7,7 +7,7 @@ import type {
   OfferThreadView,
 } from "@loadtopia/shared";
 import { ApiError, apiServer } from "@/lib/api-server";
-import { Alert, Card, PageHeader } from "@/components/ui";
+import { Alert, Badge, Card, PageHeader } from "@/components/ui";
 import { OfferThread } from "@/components/offer-thread";
 import { CreateOfferForm } from "@/components/create-offer-form";
 import { ShipmentProgress } from "@/components/operations/shipment-progress";
@@ -236,6 +236,7 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
             ? `Posted by ${market.shipperName}`
             : `This load is ${titleCase(load?.status ?? "")} — no longer on the marketplace`
         }
+        action={market?.shipperIsConnected ? <Badge tone="indigo">Connected shipper</Badge> : undefined}
       />
       <Link href="/marketplace" className="mb-2 inline-block text-sm text-brand-600 hover:underline">
         ← Marketplace
