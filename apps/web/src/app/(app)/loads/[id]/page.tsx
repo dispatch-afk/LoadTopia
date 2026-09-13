@@ -12,6 +12,7 @@ import { LoadStatusBadge } from "@/components/load-status-badge";
 import { LoadActions } from "@/components/load-actions";
 import { OfferThread } from "@/components/offer-thread";
 import { AssignCarrierButton } from "@/components/assign-carrier-button";
+import { AudiencePanel } from "@/components/loads/audience-panel";
 import { ShipmentProgress } from "@/components/operations/shipment-progress";
 import { CheckInsPanel } from "@/components/operations/check-ins-panel";
 import { DocumentsPanel } from "@/components/operations/documents-panel";
@@ -281,6 +282,12 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
               )}
             </div>
           </Card>
+
+          {load.audience && (viewerRole === "shipper" || viewerRole === "admin") && (
+            <Card className="p-5">
+              <AudiencePanel load={load} canManage={viewerRole === "shipper" || viewerRole === "admin"} />
+            </Card>
+          )}
 
           {showOps && rateConfirmation !== null && (
             <Card className="p-5">

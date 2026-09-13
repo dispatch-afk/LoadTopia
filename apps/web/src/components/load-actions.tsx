@@ -67,9 +67,9 @@ export function LoadActions({ load }: { load: LoadView }) {
           </Link>
         )}
         {canPost && (
-          <Button onClick={() => run("post", "POST")} disabled={busy !== null}>
-            {busy === "post" && <Spinner />} Post load
-          </Button>
+          <Link href={`/loads/${load.id}/review`}>
+            <Button disabled={busy !== null}>Review & Post</Button>
+          </Link>
         )}
         {canUnpost && (
           <Button variant="secondary" onClick={() => run("unpost", "POST")} disabled={busy !== null}>

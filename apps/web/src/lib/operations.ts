@@ -280,4 +280,14 @@ export const LOAD_EVENT_LABELS: Record<string, string> = {
   DOCUMENT_REVIEWED: "Document reviewed",
   DOCUMENT_REMOVED: "Document removed",
   EXCEPTION_REPORTED: "Exception reported",
+  // Freight audience strategy (Milestone 4 Phase 4)
+  LOAD_POSTED_TO_MARKETPLACE: "Posted to Marketplace",
+  LOAD_POSTED_TO_NETWORK: "Posted to Carrier Network",
+  LOAD_POSTED_TO_SELECTED_CARRIERS: "Posted to selected carriers",
+  MARKETPLACE_RELEASE_SCHEDULED: "Marketplace release scheduled",
+  NETWORK_RELEASE_SCHEDULED: "Carrier Network release scheduled",
+  LOAD_RELEASED_TO_NETWORK: "Released to Carrier Network",
+  LOAD_RELEASED_TO_MARKETPLACE: "Released to Marketplace",
+  RELEASE_RESCHEDULED: "Scheduled release rescheduled",
+  RELEASE_CANCELLED: "Scheduled release cancelled",
 };

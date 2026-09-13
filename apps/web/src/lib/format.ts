@@ -21,6 +21,19 @@ export function fmtDateTime(iso: string | null): string {
   });
 }
 
+/** Full, unambiguous timestamp including timezone name — e.g. "September 14,
+ *  2026 at 2:30 PM CDT". Used wherever a scheduled release time must be
+ *  exact, not relative (Review & Post, the Load detail audience panel). */
+export function fmtExactDateTime(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const date = d.toLocaleDateString(undefined, { dateStyle: "long" });
+  const time = d.toLocaleTimeString(undefined, { timeStyle: "short" });
+  const zoneParts = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" }).formatToParts(d);
+  const zone = zoneParts.find((p) => p.type === "timeZoneName")?.value ?? "";
+  return `${date} at ${time}${zone ? ` ${zone}` : ""}`;
+}
+
 export function fmtWindow(start: string | null, end: string | null): string {
   if (!start && !end) return "—";
   if (start && end) {

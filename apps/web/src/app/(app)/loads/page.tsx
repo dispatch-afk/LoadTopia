@@ -3,6 +3,7 @@ import { LoadStatus, type LoadListItem, type Paginated } from "@loadtopia/shared
 import { apiServer } from "@/lib/api-server";
 import { Button, Card, EmptyState, PageHeader } from "@/components/ui";
 import { LoadStatusBadge } from "@/components/load-status-badge";
+import { audienceSummaryText, nextReleaseText } from "@/lib/audience";
 import { cn, fmtDate, fmtMiles, fmtWeight, fmtWindow, titleCase } from "@/lib/format";
 
 const FILTERS = ["ALL", LoadStatus.DRAFT, LoadStatus.POSTED, LoadStatus.CANCELLED] as const;
@@ -73,6 +74,9 @@ export default async function LoadsPage({
                   <th className="px-4 py-2.5 font-medium">Equipment</th>
                   <th className="px-4 py-2.5 font-medium">Weight</th>
                   <th className="px-4 py-2.5 font-medium">Miles</th>
+                  <th className="px-4 py-2.5 font-medium">Audience</th>
+                  <th className="px-4 py-2.5 font-medium">Next release</th>
+                  <th className="px-4 py-2.5 font-medium">Offers</th>
                   <th className="px-4 py-2.5 font-medium">Created</th>
                   <th className="px-4 py-2.5 font-medium">Status</th>
                 </tr>
@@ -97,6 +101,13 @@ export default async function LoadsPage({
                     <td className="whitespace-nowrap px-4 py-3">{titleCase(l.equipmentType)}</td>
                     <td className="whitespace-nowrap px-4 py-3">{fmtWeight(l.weightLbs)}</td>
                     <td className="whitespace-nowrap px-4 py-3">{fmtMiles(l.miles)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-muted">
+                      {l.status === "DRAFT" ? "—" : audienceSummaryText(l.audience)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-muted">
+                      {l.status === "DRAFT" || !l.audience ? "—" : nextReleaseText(l.audience.nextReleaseAt)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-muted">{l.activeOfferCount}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-muted">{fmtDate(l.createdAt)}</td>
                     <td className="whitespace-nowrap px-4 py-3">
                       <LoadStatusBadge status={l.status} />
