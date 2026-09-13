@@ -420,6 +420,7 @@ export interface MarketplaceLoadListItem {
    * historical mock mileage from real routing.
    */
   routing: { provider: string | null; isMock: boolean };
+  shipperCompanyId: string;
   shipperName: string;
   postedAt: string | null;
   /** This carrier's negotiation on this load, if any. */
@@ -603,6 +604,13 @@ export interface ConnectionView {
   disconnectedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Verified shared-history summary with the counterpart company, computed
+   * from authoritative awarded-Load truth (never offers/marketplace
+   * exposure). Present on every list/detail response so the Network
+   * workspace never needs a per-row follow-up request.
+   */
+  sharedHistory: SharedHistorySummary;
 }
 
 export interface ConnectionEventView {
@@ -665,4 +673,99 @@ export interface FacilityScopeView {
   membershipId: string;
   locationIds: string[];
   companyWide: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Relationship network — Phase 3 product surface (Company/Relationship
+// Profile, verified shared history)
+// ---------------------------------------------------------------------------
+
+/** One verified shared load, for the "Shared Freight" section of a
+ *  Relationship Profile. Derived ONLY from an actually-awarded Load — a
+ *  losing offer thread or a cancelled pre-award load never appears here. */
+export interface SharedLaneView {
+  loadId: string;
+  referenceNumber: string;
+  origin: { city: string; state: string };
+  destination: { city: string; state: string };
+  status: LoadStatus;
+  awardedAt: string;
+  completedAt: string | null;
+}
+
+/** Verified shared-history SCALAR summary between the viewer's company and a
+ *  counterpart — computed live from authoritative Load truth (never a
+ *  persisted vanity metric). All-zero/null for a pair that has never been
+ *  awarded freight together, including a pair with only losing offers,
+ *  cancelled pre-award loads, or mere marketplace visibility. Deliberately
+ *  has NO lane-level detail — that's list-unsafe (see
+ *  {@link CompanyProfileSharedHistory}); this is the shape attached to every
+ *  row of a Connection LIST, computed batched (never per-row). */
+export interface SharedHistorySummary {
+  shipmentsTogether: number;
+  completedShipments: number;
+  activeShipments: number;
+  lastWorkedTogether: string | null;
+}
+
+/** The full shared-history payload for a SINGLE pair's Company/Relationship
+ *  Profile detail page — the scalar summary plus recent lane-level detail.
+ *  Never used in a list response (that would mean N per-row lane queries). */
+export interface CompanyProfileSharedHistory extends SharedHistorySummary {
+  recentLanes: SharedLaneView[];
+}
+
+/** The viewer's OWN private relationship state toward a company being
+ *  profiled — never the counterpart's state toward the viewer. `null` for a
+ *  field that doesn't apply to this viewer/counterpart combination (e.g.
+ *  `isFollowing` is null when the viewer isn't a carrier looking at a
+ *  shipper). */
+export interface RelationshipContextView {
+  connection: ConnectionView | null;
+  connectionEvents: ConnectionEventView[];
+  /** Only meaningful when the viewer is a CARRIER viewing a SHIPPER. */
+  isFollowing: boolean | null;
+  /** Only meaningful when the viewer is a SHIPPER viewing a CARRIER. Never
+   *  the reverse — a carrier can never learn a shipper's preference. */
+  preference: CarrierPreferenceType | null;
+  /** The VIEWER's own block against this company, if any and in force.
+   *  Never the counterpart's block against the viewer. */
+  blockStatus: CompanyBlockStatus | null;
+  /** Only meaningful when the viewer is a SHIPPER viewing a CARRIER: which
+   *  of the viewer's OWN Carrier Groups this carrier belongs to. */
+  groups: { id: string; name: string }[] | null;
+}
+
+/** Business-profile facts about a CARRIER company, self-declared via
+ *  CarrierProfile — the same identity/capability facts already shown on the
+ *  marketplace board, never verification/eligibility internals (those are
+ *  LoadTopia-internal gates, not a trust badge to display to another
+ *  company). */
+export interface CompanyCapabilitiesView {
+  legalName: string;
+  equipmentTypes: EquipmentType[];
+  serviceAreaStates: string[];
+}
+
+/** Unified Company Profile / Relationship Profile payload — ONE route (per
+ *  companyId) whose content adapts to relationship state and the viewer's
+ *  own company type, rather than separate profile/relationship endpoints. */
+export interface CompanyProfileView {
+  id: string;
+  type: CompanyType;
+  name: string;
+  city: string | null;
+  state: string | null;
+  memberSince: string;
+  capabilities: CompanyCapabilitiesView | null;
+  relationship: RelationshipContextView;
+  sharedHistory: CompanyProfileSharedHistory;
+}
+
+/** A shipper's own connected (ACCEPTED) carrier, eligible for Carrier Group
+ *  membership — used to populate the "add carrier" control without the
+ *  client having to re-derive eligibility from raw connection/block state. */
+export interface EligibleGroupCarrierView {
+  companyId: string;
+  companyName: string;
 }
