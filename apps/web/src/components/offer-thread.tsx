@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { OfferThreadView } from "@loadtopia/shared";
@@ -61,7 +62,14 @@ export function OfferThread({ thread }: { thread: OfferThreadView }) {
     <div className="rounded-xl border border-line bg-white p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          {thread.carrier && <span className="text-sm font-medium text-ink">{thread.carrier.name}</span>}
+          {thread.carrier && (
+            <Link
+              href={`/network/companies/${thread.carrier.companyId}`}
+              className="text-sm font-medium text-brand-600 hover:underline"
+            >
+              {thread.carrier.name}
+            </Link>
+          )}
           <Badge tone={OFFER_THREAD_STATUS_TONE[thread.status]}>{titleCase(thread.status)}</Badge>
           {thread.awaitingMyResponse && thread.status === "ACTIVE" && (
             <Badge tone="indigo">Your move</Badge>

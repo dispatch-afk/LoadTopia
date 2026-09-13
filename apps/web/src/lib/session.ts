@@ -23,6 +23,13 @@ export function activeMembership(me: MeResponse) {
   return me.memberships.find((m) => m.companyId === me.activeCompanyId) ?? null;
 }
 
+/** Company-primary/admin authority (Milestone 4 Phase 2/3) — mirrors the
+ *  server's `isCompanyPrimaryAuthority`. This is UI-only convenience for
+ *  showing/hiding management controls; the API re-enforces it regardless. */
+export function isActivePrimary(me: MeResponse): boolean {
+  return activeMembership(me)?.isPrimary ?? false;
+}
+
 export function can(me: MeResponse, permission: string): boolean {
   return me.permissions.includes(permission);
 }

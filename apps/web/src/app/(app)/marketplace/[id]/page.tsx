@@ -237,9 +237,17 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
             : `This load is ${titleCase(load?.status ?? "")} — no longer on the marketplace`
         }
       />
-      <Link href="/marketplace" className="mb-4 inline-block text-sm text-brand-600 hover:underline">
+      <Link href="/marketplace" className="mb-2 inline-block text-sm text-brand-600 hover:underline">
         ← Marketplace
       </Link>
+      {market && (
+        <Link
+          href={`/network/companies/${market.shipperCompanyId}`}
+          className="mb-4 block text-sm text-brand-600 hover:underline"
+        >
+          View shipper profile &amp; connect →
+        </Link>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
