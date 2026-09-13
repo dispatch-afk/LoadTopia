@@ -19,6 +19,12 @@ import { healthRoutes } from "./modules/health/health.routes";
 import { loadsRoutes } from "./modules/loads/loads.routes";
 import { locationsRoutes } from "./modules/locations/locations.routes";
 import { marketplaceRoutes } from "./modules/marketplace/marketplace.routes";
+import { blocksRoutes } from "./modules/network/blocks.routes";
+import { carrierGroupsRoutes } from "./modules/network/carrier-groups.routes";
+import { connectionsRoutes } from "./modules/network/connections.routes";
+import { facilityScopeRoutes } from "./modules/network/facility-scope.routes";
+import { followsRoutes } from "./modules/network/follows.routes";
+import { preferencesRoutes } from "./modules/network/preferences.routes";
 import { offersRoutes } from "./modules/offers/offers.routes";
 import { pricingRoutes } from "./modules/pricing/pricing.routes";
 
@@ -77,6 +83,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await api.register(marketplaceRoutes);
       await api.register(offersRoutes);
       await api.register(adminMarketplaceRoutes);
+      // Relationship network + facility scope (Milestone 4 Phase 2)
+      await api.register(followsRoutes);
+      await api.register(connectionsRoutes);
+      await api.register(preferencesRoutes);
+      await api.register(blocksRoutes);
+      await api.register(carrierGroupsRoutes);
+      await api.register(facilityScopeRoutes);
     },
     { prefix: "/api" },
   );

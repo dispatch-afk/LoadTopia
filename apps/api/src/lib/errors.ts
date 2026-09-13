@@ -40,6 +40,9 @@ const DOMAIN_ERROR_CODES = new Set([
   // transition error, which mirrors INVALID_LOAD_TRANSITION).
   "NEGOTIATION_RULE",
   "INVALID_OFFER_TRANSITION",
+  // Relationship network domain errors (@loadtopia/domain network/*). Always
+  // carries a numeric statusCode (NetworkError sets one explicitly).
+  "NETWORK_RULE",
 ]);
 
 function isDomainError(
