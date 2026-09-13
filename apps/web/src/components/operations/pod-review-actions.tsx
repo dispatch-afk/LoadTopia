@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { ConfirmDialog } from "@/components/dialog";
 import { Alert, Button, Field, Spinner, Textarea } from "@/components/ui";
 
 /**
@@ -15,15 +16,16 @@ export function PodReviewActions({ documentId }: { documentId: string }) {
   const router = useRouter();
   const [mode, setMode] = useState<"idle" | "rejecting">("idle");
   const [reason, setReason] = useState("");
+  const [confirmingApprove, setConfirmingApprove] = useState(false);
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function approve() {
-    if (!window.confirm("Approve this POD? This finalises the proof of delivery.")) return;
     setBusy("approve");
     setError(null);
     try {
       await apiClient(`/load-documents/${documentId}/approve`, { method: "POST" });
+      setConfirmingApprove(false);
       router.refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not approve the POD");
@@ -53,12 +55,21 @@ export function PodReviewActions({ documentId }: { documentId: string }) {
 
       {mode === "idle" ? (
         <div className="flex flex-wrap gap-2">
-          <Button onClick={approve} disabled={busy !== null}>
+          <Button onClick={() => setConfirmingApprove(true)} disabled={busy !== null}>
             {busy === "approve" && <Spinner />} Approve POD
           </Button>
           <Button variant="danger" onClick={() => setMode("rejecting")} disabled={busy !== null}>
             Reject POD
           </Button>
+          <ConfirmDialog
+            open={confirmingApprove}
+            onOpenChange={setConfirmingApprove}
+            title="Approve this POD?"
+            description="This finalises the proof of delivery."
+            confirmLabel="Approve"
+            busy={busy === "approve"}
+            onConfirm={approve}
+          />
         </div>
       ) : (
         <form onSubmit={reject} className="space-y-2">

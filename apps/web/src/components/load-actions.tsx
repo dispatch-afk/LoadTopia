@@ -5,12 +5,15 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { LoadView } from "@loadtopia/shared";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { ConfirmDialog, PromptDialog } from "./dialog";
 import { Alert, Button, Spinner } from "./ui";
 
 export function LoadActions({ load }: { load: LoadView }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   async function run(action: string, method: "POST" | "DELETE", body?: unknown) {
     setBusy(action);
@@ -74,25 +77,12 @@ export function LoadActions({ load }: { load: LoadView }) {
           </Button>
         )}
         {canCancel && (
-          <Button
-            variant="danger"
-            onClick={() => {
-              const reason = window.prompt("Reason for cancelling (optional):") ?? undefined;
-              run("cancel", "POST", reason ? { reason } : undefined);
-            }}
-            disabled={busy !== null}
-          >
+          <Button variant="danger" onClick={() => setCancelling(true)} disabled={busy !== null}>
             {busy === "cancel" && <Spinner />} Cancel load
           </Button>
         )}
         {canDelete && (
-          <Button
-            variant="danger"
-            onClick={() => {
-              if (window.confirm("Delete this draft load permanently?")) run("delete", "DELETE");
-            }}
-            disabled={busy !== null}
-          >
+          <Button variant="danger" onClick={() => setDeleting(true)} disabled={busy !== null}>
             {busy === "delete" && <Spinner />} Delete
           </Button>
         )}
@@ -107,6 +97,36 @@ export function LoadActions({ load }: { load: LoadView }) {
           This load is posted. Withdraw it to a draft to make changes.
         </p>
       )}
+
+      <PromptDialog
+        open={cancelling}
+        onOpenChange={setCancelling}
+        title="Cancel this load?"
+        description="This cannot be undone. You may optionally record why."
+        label="Reason for cancelling (optional)"
+        placeholder="e.g. Customer no longer needs this shipment"
+        submitLabel="Cancel load"
+        cancelLabel="Keep load"
+        busy={busy === "cancel"}
+        onSubmit={(reason) => {
+          setCancelling(false);
+          run("cancel", "POST", reason ? { reason } : undefined);
+        }}
+      />
+
+      <ConfirmDialog
+        open={deleting}
+        onOpenChange={setDeleting}
+        title="Delete this draft load?"
+        description="This permanently deletes the load. This cannot be undone."
+        confirmLabel="Delete"
+        tone="danger"
+        busy={busy === "delete"}
+        onConfirm={() => {
+          setDeleting(false);
+          run("delete", "DELETE");
+        }}
+      />
     </div>
   );
 }
