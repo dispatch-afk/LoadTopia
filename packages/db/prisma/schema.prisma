@@ -89,6 +89,16 @@ enum LoadEventType {
   DOCUMENT_REVIEWED
   DOCUMENT_REMOVED
   EXCEPTION_REPORTED
+  // --- Milestone 4 Phase 4 (freight audience strategy) ---
+  LOAD_POSTED_TO_MARKETPLACE
+  LOAD_POSTED_TO_NETWORK
+  LOAD_POSTED_TO_SELECTED_CARRIERS
+  MARKETPLACE_RELEASE_SCHEDULED
+  NETWORK_RELEASE_SCHEDULED
+  LOAD_RELEASED_TO_NETWORK
+  LOAD_RELEASED_TO_MARKETPLACE
+  RELEASE_RESCHEDULED
+  RELEASE_CANCELLED
 }
 
 // --- Operations (Milestone 3) --------------------------------------------- -
@@ -201,6 +211,35 @@ enum CompanyBlockStatus {
   INACTIVE
 }
 
+// --- Freight audience strategy (Milestone 4 Phase 4) -----------------------
+
+/// The shipper's chosen distribution strategy, fixed at Review & Post. Never
+/// changes after posting — audience WIDENS over time via `currentStage`
+/// advancing, never by picking a different strategy.
+enum LoadAudienceStrategyType {
+  MARKETPLACE
+  NETWORK_FIRST
+  SELECTED_FIRST
+}
+
+/// The current visibility boundary for a load's audience. Ordered
+/// SELECTED < NETWORK < MARKETPLACE — `currentStage` only ever advances
+/// forward (see LoadAudienceStrategyRecord.currentStage / the release engine).
+enum LoadAudienceStage {
+  SELECTED
+  NETWORK
+  MARKETPLACE
+}
+
+/// Lifecycle of one scheduled (or manually triggered) audience-widening
+/// action. PENDING rows are claimed compare-and-set by the release engine —
+/// see LoadAudienceRelease.
+enum LoadReleaseStatus {
+  PENDING
+  RELEASED
+  CANCELLED
+}
+
 // ---------------------------------------------------------------------------
 // Identity & organizations
 // ---------------------------------------------------------------------------
@@ -299,6 +338,10 @@ model User {
   carrierPreferencesSet  CarrierPreference[]
   blocksCreated          CompanyBlock[]           @relation("BlockCreatedByUser")
   blocksRemoved          CompanyBlock[]           @relation("BlockRemovedByUser")
+
+  // Freight audience strategy (Milestone 4 Phase 4)
+  audienceStrategiesCreated LoadAudienceStrategyRecord[]
+  audienceReleasesCreated   LoadAudienceRelease[]
 
   @@map("users")
 }
@@ -521,6 +564,14 @@ model Load {
   checkIns         LoadCheckIn[]
   documents        LoadDocument[]
   rateConfirmation RateConfirmation?
+
+  /// Freight audience strategy (Milestone 4 Phase 4). At most one row — absent
+  /// for every load posted before this feature shipped (see
+  /// LoadAudienceStrategyRecord's doc comment for the historical-compatibility
+  /// rule this null encodes).
+  audienceStrategy LoadAudienceStrategyRecord?
+  audienceMembers  LoadAudienceMember[]
+  audienceReleases LoadAudienceRelease[]
 
   @@index([status])
   @@index([shipperCompanyId, status])
@@ -1076,6 +1127,149 @@ model CarrierGroupMember {
   @@unique([groupId, carrierCompanyId])
   @@index([carrierCompanyId])
   @@map("carrier_group_members")
+}
+
+// ---------------------------------------------------------------------------
+// Freight audience strategy (Milestone 4 Phase 4)
+//
+// Core invariant: the SAME Load broadens over time — these rows never cause a
+// clone/replacement Load, never touch offers, and never rewrite the load
+// state machine. `LoadAudienceStrategyRecord.currentStage` is the single
+// authoritative "how far has this load's audience widened" pointer; visibility
+// composes it with the UNCHANGED marketplace eligibility rules from Milestone 2
+// (see packages/domain/src/audience/audience-visibility.ts).
+//
+// Historical compatibility: a Load with NO `LoadAudienceStrategyRecord` row is
+// a pre-Phase-4 posted load — it behaves exactly as it always did (full
+// marketplace visibility to every eligible carrier, no audience restriction).
+// This row is created ONCE, at Review & Post, for every load posted from this
+// feature forward, and is never backfilled onto historical loads.
+// ---------------------------------------------------------------------------
+
+/// One row per Load (created at Review & Post), for the life of that Load.
+/// The strategy CHOICE is immutable; `currentStage` advances forward-only as
+/// releases execute — this is what lets the SAME Load broaden its audience
+/// without ever being cloned or reposted.
+model LoadAudienceStrategyRecord {
+  id                  String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId              String                    @unique @map("load_id") @db.Uuid
+  strategy            LoadAudienceStrategyType
+  /// The visibility boundary currently in effect. Starts at SELECTED
+  /// (Selected Carriers First), NETWORK (Network First), or MARKETPLACE
+  /// (Marketplace) depending on `strategy`, and only ever moves forward.
+  currentStage        LoadAudienceStage         @map("current_stage")
+  /// True once the shipper has explicitly turned off further automatic
+  /// widening for the CURRENT stage (set at posting when "Don't release
+  /// automatically" is chosen, or by an explicit cancel of a pending
+  /// release). Release Now remains available regardless.
+  autoReleaseDisabled Boolean                   @default(false) @map("auto_release_disabled")
+  createdByUserId     String                    @map("created_by_user_id") @db.Uuid
+  createdAt           DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  load          Load                  @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  createdByUser User                  @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  members       LoadAudienceMember[]
+  releases      LoadAudienceRelease[]
+
+  @@index([currentStage])
+  @@map("load_audience_strategies")
+}
+
+/// A concrete, frozen audience-member snapshot for a PRIVATE stage (SELECTED
+/// or NETWORK — never MARKETPLACE, which stays open to all otherwise-eligible
+/// carriers and needs no finite snapshot). `stage` records WHICH stage this
+/// row was captured for, since a load's audience can be snapshotted TWICE
+/// over its life: once for SELECTED (at Review & Post, for a Selected
+/// Carriers First load) and again for NETWORK (at Review & Post for a
+/// Network First load, OR at the moment a SELECTED -> NETWORK release
+/// actually executes) — a carrier may legitimately appear in BOTH a SELECTED
+/// row and a later, separate NETWORK row for the same load; these are
+/// distinct historical facts and are never merged or overwritten.
+///
+/// This snapshot is HISTORICAL TRUTH ("this carrier was in the audience when
+/// this stage was established"), never permanent authorization by itself —
+/// current visibility additionally requires a live ACCEPTED Connection and no
+/// in-force Block (see isCarrierInAudience). Editing a Carrier Group later,
+/// a carrier disconnecting, or new connections forming never mutates this
+/// row. `sourceGroupId` is optional provenance for display/audit only (only
+/// ever set for a SELECTED-stage row sourced from a group) — it is NEVER
+/// read as an authorization source (see NetworkGroupsService et al.: "do not
+/// store only a dynamic group reference as the authorization mechanism").
+model LoadAudienceMember {
+  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId           String            @map("load_id") @db.Uuid
+  strategyId       String            @map("strategy_id") @db.Uuid
+  stage            LoadAudienceStage
+  carrierCompanyId String            @map("carrier_company_id") @db.Uuid
+  /// Provenance only, nullable (a carrier may have been picked individually,
+  /// not via a group; always null for a NETWORK-stage row). No FK — the
+  /// source group may be renamed or deleted later without touching this
+  /// immutable snapshot.
+  sourceGroupId    String?           @map("source_group_id") @db.Uuid
+  sourceGroupName  String?           @map("source_group_name")
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  load     Load                       @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  strategy LoadAudienceStrategyRecord @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+
+  // Powers the carrier-visibility query directly off Load (no join through
+  // the strategy needed for "am I a member of this load's CURRENT stage").
+  @@unique([loadId, stage, carrierCompanyId])
+  @@index([carrierCompanyId])
+  @@map("load_audience_members")
+}
+
+/// One row per scheduled (or manually executed) audience-widening action.
+/// DB-backed source of truth for the release engine — see
+/// apps/api/src/modules/loads/release-engine.ts.
+///
+/// `fromStage` is the exact stage the strategy's `currentStage` MUST equal
+/// for this release to be valid to execute — the database-enforced ordering
+/// mechanism for a chained release (e.g. SELECTED -> NETWORK, then a second
+/// row NETWORK -> MARKETPLACE). Derived once at creation from the chain
+/// position (the strategy's own starting stage for the first hop, or the
+/// previous hop's `toStage` for a later one) — never re-derived from process-
+/// local state, poll timing, or row order, so correctness does not depend on
+/// a single poller instance or `findMany` ordering.
+///
+/// A row is claimed via `SELECT ... FOR UPDATE` on this specific row inside
+/// the execution transaction (see executeOneRelease): this is safe under
+/// multiple concurrent API instances / duplicate polls — a second claimant
+/// blocks until the first commits, then re-reads `status` and no-ops. If the
+/// authoritative `currentStage` does not yet equal `fromStage` (the
+/// predecessor hop has not executed), the row is left PENDING and retried by
+/// a later poll — it is never permanently consumed or cancelled just because
+/// it was attempted early.
+model LoadAudienceRelease {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId          String            @map("load_id") @db.Uuid
+  strategyId      String            @map("strategy_id") @db.Uuid
+  /// The stage the strategy's currentStage must equal for this release to
+  /// be valid to execute.
+  fromStage       LoadAudienceStage @map("from_stage")
+  /// The stage this release, once executed, advances the load TO.
+  toStage         LoadAudienceStage @map("to_stage")
+  status          LoadReleaseStatus @default(PENDING)
+  scheduledAt     DateTime          @map("scheduled_at") @db.Timestamptz(6)
+  executedAt      DateTime?         @map("executed_at") @db.Timestamptz(6)
+  cancelledAt     DateTime?         @map("cancelled_at") @db.Timestamptz(6)
+  /// Present only when status = CANCELLED — distinguishes an explicit shipper
+  /// cancellation from one superseded by a manual Release Now, or one that
+  /// never got the chance to apply because the load became covered/ineligible.
+  cancelReason    String?           @map("cancel_reason")
+  createdByUserId String            @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  load          Load                       @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  strategy      LoadAudienceStrategyRecord @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  createdByUser User                       @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  // The release engine's poll query: claim due, still-pending releases.
+  @@index([status, scheduledAt])
+  @@index([loadId])
+  @@map("load_audience_releases")
 }
 
 /// Facility scope (Milestone 4 Phase 2): an ADDITIONAL restriction layered on
