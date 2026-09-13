@@ -28,6 +28,8 @@ import {
 import { AppError, conflict, forbidden, notFound } from "../../lib/errors";
 import { loadCarrierEligibilityContext } from "../../lib/carrier-context";
 import { atomicLoadTransition, markLoadOfferReceived } from "../../lib/load-lifecycle";
+import { isLoadVisibleToCarrier } from "../loads/audience-access";
+import { cancelPendingReleases } from "../loads/release-engine";
 import { insertRateConfirmationSnapshot } from "../rate-confirmations/rate-confirmation.snapshot";
 import type { RateConfirmationGenerator } from "../rate-confirmations/rate-confirmation.service";
 import { toDecimal } from "../../lib/money";
@@ -210,12 +212,27 @@ export class OffersService {
       select: {
         status: true,
         equipmentType: true,
+        shipperCompanyId: true,
         origin: { select: { state: true } },
       },
     });
     // IDOR-safe: a DRAFT / private / cancelled / awarded load is simply "not found"
     // to a carrier — they can only reach loads that are on the marketplace.
     if (!load || !MARKETPLACE_VISIBLE_STATUSES.includes(load.status)) {
+      throw notFound("Load not found");
+    }
+    // Freight audience strategy (Milestone 4 Phase 4): never trust prior page
+    // access — re-check CURRENT audience membership independently here, not
+    // just at the marketplace list/detail GET (§23). A carrier outside the
+    // current audience (or in-force-blocked) gets the same 404 as a load it
+    // can't see at all — never a differently-worded 403 that would leak that
+    // restricted freight exists.
+    if (
+      !(await isLoadVisibleToCarrier(this.prisma, carrierCompanyId, {
+        id: loadId,
+        shipperCompanyId: load.shipperCompanyId,
+      }))
+    ) {
       throw notFound("Load not found");
     }
 
@@ -524,6 +541,12 @@ export class OffersService {
           amount: winningRound.amount.toFixed(2),
         },
       });
+
+      // A covered (awarded) load must never widen its audience afterward —
+      // cancel any pending scheduled release in this SAME award transaction
+      // (§6-7). This is the one, smallest necessary integration point into
+      // the existing award path Phase 4 is allowed to touch.
+      await cancelPendingReleases(tx, loadId, "load_covered", actor.userId, actor.companyId);
 
       // Winning thread → ACCEPTED (DB partial unique guarantees ≤ 1 per load).
       await tx.offerThread.update({

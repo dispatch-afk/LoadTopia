@@ -16,6 +16,7 @@ export type MarketplaceLoadRow = Prisma.LoadGetPayload<{ include: typeof marketp
 export function toMarketplaceListItem(
   l: MarketplaceLoadRow,
   myThread: OfferThreadSummary | null,
+  shipperIsConnected: boolean,
 ): MarketplaceLoadListItem {
   return {
     id: l.id,
@@ -38,6 +39,7 @@ export function toMarketplaceListItem(
     routing: { provider: l.routingProvider, isMock: l.routingProvider === MOCK_PROVIDER_NAME },
     shipperCompanyId: l.shipperCompanyId,
     shipperName: l.shipperCompany.name,
+    shipperIsConnected,
     postedAt: l.postedAt?.toISOString() ?? null,
     myThread,
   };

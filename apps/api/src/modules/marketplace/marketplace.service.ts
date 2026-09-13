@@ -9,6 +9,7 @@ import {
 import {
   type AuthenticatedActor,
   type CreateOfferInput,
+  LoadAudienceStage,
   type MarketplaceLoadListItem,
   type MarketplaceLoadView,
   type MarketplaceSearchQuery,
@@ -18,6 +19,8 @@ import {
 import { AppError, forbidden, notFound } from "../../lib/errors";
 import { loadCarrierEligibilityContext } from "../../lib/carrier-context";
 import { paginate, toSkipTake } from "../../lib/pagination";
+import { isLoadVisibleToCarrier } from "../loads/audience-access";
+import { resolveAcceptedShipperIds, resolveBlockedShipperIds } from "../loads/audience.query";
 import { OffersService } from "../offers/offers.service";
 import { threadSummaryInclude, toThreadSummary } from "../offers/offer.serializer";
 import {
@@ -124,8 +127,39 @@ export class MarketplaceService {
           }
         : undefined;
 
+    // Freight audience strategy (Milestone 4 Phase 4): precompute this
+    // carrier's live network membership ONCE for the whole list — never a
+    // per-row query. A block always wins, at every stage, including a
+    // legacy (no-strategy-record) load — see isCarrierInAudience.
+    //
+    // Both private stages (SELECTED and NETWORK) require the SAME two
+    // things — frozen snapshot membership at the load's CURRENT stage AND a
+    // live ACCEPTED connection right now (review corrections #1/#2): a
+    // snapshot is historical truth, never standing authorization by itself.
+    // `privateStageBranch` builds one identically-shaped OR-branch per
+    // stage so a disconnect (which only changes `acceptedShipperIds`) and a
+    // stage-scoped snapshot (which only changes `audienceMembers.some`)
+    // compose correctly without duplicating the query shape.
+    const [acceptedShipperIds, blockedShipperIds] = await Promise.all([
+      resolveAcceptedShipperIds(this.prisma, actor.companyId!),
+      resolveBlockedShipperIds(this.prisma, actor.companyId!),
+    ]);
+    const privateStageBranch = (stage: "SELECTED" | "NETWORK"): Prisma.LoadWhereInput => ({
+      audienceStrategy: { currentStage: stage },
+      audienceMembers: { some: { carrierCompanyId: actor.companyId!, stage } },
+      shipperCompanyId: { in: [...acceptedShipperIds] },
+    });
+    const audienceOr: Prisma.LoadWhereInput[] = [
+      { audienceStrategy: null },
+      { audienceStrategy: { currentStage: LoadAudienceStage.MARKETPLACE } },
+      privateStageBranch(LoadAudienceStage.NETWORK),
+      privateStageBranch(LoadAudienceStage.SELECTED),
+    ];
+
     const where: Prisma.LoadWhereInput = {
       status: { in: [...MARKETPLACE_VISIBLE_STATUSES] },
+      shipperCompanyId: { notIn: [...blockedShipperIds] },
+      OR: audienceOr,
       ...(equipmentIn ? { equipmentType: { in: equipmentIn } } : {}),
       ...(q.mode ? { mode: q.mode } : {}),
       ...(originStates ? { origin: { state: { in: originStates } } } : {}),
@@ -154,7 +188,13 @@ export class MarketplaceService {
       rows.map((r) => r.id),
     );
     return paginate(
-      rows.map((r) => toMarketplaceListItem(r, threads.get(r.id) ?? null)),
+      rows.map((r) =>
+        toMarketplaceListItem(
+          r,
+          threads.get(r.id) ?? null,
+          acceptedShipperIds.has(r.shipperCompanyId),
+        ),
+      ),
       total,
       q,
     );
@@ -171,6 +211,17 @@ export class MarketplaceService {
     if (!load || !MARKETPLACE_VISIBLE_STATUSES.includes(load.status)) {
       throw notFound("Load not found");
     }
+    // Freight audience strategy (Milestone 4 Phase 4): outside the current
+    // audience (or blocked) ⇒ the SAME 404 — a carrier must not learn that
+    // restricted freight exists (§22).
+    if (
+      !(await isLoadVisibleToCarrier(this.prisma, actor.companyId!, {
+        id: loadId,
+        shipperCompanyId: load.shipperCompanyId,
+      }))
+    ) {
+      throw notFound("Load not found");
+    }
 
     const eligibility = isCarrierEligibleForLoad(ctx, {
       status: load.status,
@@ -178,9 +229,12 @@ export class MarketplaceService {
       originState: load.origin.state,
     });
 
-    const threads = await this.myThreadsByLoad(actor.companyId!, [loadId]);
+    const [threads, network] = await Promise.all([
+      this.myThreadsByLoad(actor.companyId!, [loadId]),
+      resolveAcceptedShipperIds(this.prisma, actor.companyId!),
+    ]);
     return {
-      ...toMarketplaceListItem(load, threads.get(loadId) ?? null),
+      ...toMarketplaceListItem(load, threads.get(loadId) ?? null, network.has(load.shipperCompanyId)),
       eligibility: { eligible: eligibility.eligible, reasons: [...eligibility.reasons] },
     };
   }
