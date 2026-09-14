@@ -16,8 +16,10 @@ import { Spinner } from "./ui";
 const NAV: { href: string; label: string | ((companyType: CompanyType | null) => string); permission?: string }[] = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/loads", label: "Loads", permission: "load:read:own" },
+  { href: "/shipments", label: "Shipments", permission: "load:read:own" },
   { href: "/marketplace", label: "Marketplace", permission: "marketplace:browse" },
   { href: "/marketplace/offers", label: "My Offers", permission: "offer:create" },
+  { href: "/my-shipments", label: "My Shipments", permission: "marketplace:browse" },
   { href: "/network", label: networkAreaLabel, permission: "network:request" },
   { href: "/locations", label: "Locations", permission: "location:read" },
   { href: "/equipment", label: "Equipment", permission: "equipment:read" },

@@ -201,6 +201,9 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
                   </p>
                   {load.status === "AWARDED" && (
                     <div className="mt-2">
+                      <p className="mb-1.5 text-xs text-emerald-800">
+                        This load predates automatic carrier assignment.
+                      </p>
                       <AssignCarrierButton loadId={load.id} />
                     </div>
                   )}

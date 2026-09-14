@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { MarketplaceLoadListItem, Paginated } from "@loadtopia/shared";
 import { ApiError, apiServer } from "@/lib/api-server";
 import { Alert, Badge, Card, EmptyState, PageHeader } from "@/components/ui";
-import { fmtDate, fmtMiles, fmtWeight, fmtWindow, titleCase } from "@/lib/format";
+import { fmtDate, fmtMiles, fmtMoney, fmtWeight, fmtWindow, titleCase } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
@@ -85,6 +85,7 @@ export default async function MarketplacePage({
                   <th className="px-4 py-2.5 font-medium">Equipment</th>
                   <th className="px-4 py-2.5 font-medium">Weight</th>
                   <th className="px-4 py-2.5 font-medium">Miles</th>
+                  <th className="px-4 py-2.5 font-medium">Rate</th>
                   <th className="px-4 py-2.5 font-medium">Shipper</th>
                   <th className="px-4 py-2.5 font-medium">Posted</th>
                   <th className="px-4 py-2.5 font-medium">My offer</th>
@@ -112,6 +113,18 @@ export default async function MarketplacePage({
                         <div className="text-xs text-muted">
                           MOCK development data, not real-world routing
                         </div>
+                      )}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3">
+                      {l.commercialMode === "PUBLISH_RATE" && l.postedRate ? (
+                        <>
+                          <span className="font-medium">{fmtMoney(l.postedRate)}</span>
+                          {l.ratePerMile && (
+                            <span className="ml-1 text-xs text-muted">${l.ratePerMile}/mi</span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-muted">Requesting offers</span>
                       )}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-muted">

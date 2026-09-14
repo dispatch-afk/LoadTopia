@@ -10,6 +10,7 @@ import { ApiError, apiServer } from "@/lib/api-server";
 import { Alert, Badge, Card, PageHeader } from "@/components/ui";
 import { OfferThread } from "@/components/offer-thread";
 import { CreateOfferForm } from "@/components/create-offer-form";
+import { BookAtPostedRateButton } from "@/components/book-at-posted-rate-button";
 import { ShipmentProgress } from "@/components/operations/shipment-progress";
 import { CheckInsPanel } from "@/components/operations/check-ins-panel";
 import { DocumentsPanel } from "@/components/operations/documents-panel";
@@ -294,6 +295,19 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
                   </>
                 }
               />
+              {market?.commercialMode === "PUBLISH_RATE" && market.postedRate && (
+                <Detail
+                  label="Posted rate"
+                  value={
+                    <>
+                      <span className="font-semibold">{fmtMoney(market.postedRate)}</span>
+                      {market.ratePerMile && (
+                        <span className="ml-1.5 text-muted">${market.ratePerMile}/mi</span>
+                      )}
+                    </>
+                  }
+                />
+              )}
             </dl>
           </Card>
 
@@ -325,7 +339,9 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
               </>
             ) : (
               <>
-                <h2 className="mb-3 text-sm font-semibold text-ink">Make an offer</h2>
+                <h2 className="mb-3 text-sm font-semibold text-ink">
+                  {market?.commercialMode === "PUBLISH_RATE" ? "Book or offer" : "Make an offer"}
+                </h2>
                 {thread ? (
                   <p className="text-sm text-muted">
                     You have{" "}
@@ -333,7 +349,17 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
                     negotiation on this load. Manage it on the left.
                   </p>
                 ) : canOffer ? (
-                  <CreateOfferForm loadId={id} />
+                  <div className="space-y-3">
+                    {market?.commercialMode === "PUBLISH_RATE" && market.postedRate && (
+                      <BookAtPostedRateButton loadId={id} postedRate={market.postedRate} />
+                    )}
+                    <div className={market?.commercialMode === "PUBLISH_RATE" ? "border-t border-line pt-3" : ""}>
+                      {market?.commercialMode === "PUBLISH_RATE" && (
+                        <p className="mb-2 text-xs text-muted">Prefer to negotiate instead?</p>
+                      )}
+                      <CreateOfferForm loadId={id} />
+                    </div>
+                  </div>
                 ) : market ? (
                   <Alert tone="info">
                     You cannot offer on this load:

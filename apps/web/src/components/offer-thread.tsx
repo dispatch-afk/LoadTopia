@@ -74,6 +74,9 @@ export function OfferThread({ thread }: { thread: OfferThreadView }) {
           {thread.awaitingMyResponse && thread.status === "ACTIVE" && (
             <Badge tone="indigo">Your move</Badge>
           )}
+          {thread.originType === "POSTED_RATE_BOOKING" && (
+            <Badge tone="gray">Booked at posted rate</Badge>
+          )}
         </div>
         <span className="text-sm font-semibold text-ink">
           {fmtMoney(thread.currentAmount, thread.currentCurrency)}

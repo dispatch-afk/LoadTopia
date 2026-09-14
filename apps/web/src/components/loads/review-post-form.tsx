@@ -21,7 +21,7 @@ import {
   RELEASE_PRESET_HOURS,
   timingWarningText,
 } from "@/lib/audience";
-import { fmtExactDateTime, fmtWindow, titleCase } from "@/lib/format";
+import { fmtExactDateTime, fmtMoney, fmtWindow, titleCase } from "@/lib/format";
 
 type Strategy = LoadAudienceStrategyType;
 
@@ -252,6 +252,37 @@ export function ReviewPostForm({
               <dd>{fmtWindow(load.deliveryWindowStart, load.deliveryWindowEnd)}</dd>
             </div>
           </dl>
+        </Card>
+
+        <Card className="p-5">
+          <h2 className="mb-3 text-sm font-semibold text-ink">Commercial</h2>
+          <dl className="grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <dt className="text-xs uppercase text-muted">Mode</dt>
+              <dd>
+                {load.commercialMode === "PUBLISH_RATE" ? "Publish a Rate" : "Request Carrier Offers"}
+              </dd>
+            </div>
+            {load.commercialMode === "PUBLISH_RATE" && (
+              <>
+                <div>
+                  <dt className="text-xs uppercase text-muted">Posted rate</dt>
+                  <dd className="font-medium">{fmtMoney(load.postedRate)}</dd>
+                </div>
+                {load.ratePerMile && (
+                  <div>
+                    <dt className="text-xs uppercase text-muted">Rate per mile</dt>
+                    <dd>${load.ratePerMile}/mi</dd>
+                  </div>
+                )}
+              </>
+            )}
+          </dl>
+          <p className="mt-2 text-xs text-muted">
+            {load.commercialMode === "PUBLISH_RATE"
+              ? "Carriers will see this exact rate and may Book at Posted Rate or Make an Offer."
+              : "Carriers will see no price and may Submit Offer."}
+          </p>
         </Card>
 
         <Card className="p-5">
