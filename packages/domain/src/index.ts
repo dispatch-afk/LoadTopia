@@ -3,6 +3,7 @@ export * from "./load/document-review-state-machine";
 export * from "./load/load-events";
 export * from "./load/load-validation";
 export * from "./load/load-number";
+export * from "./load/shipment-next-action";
 export * from "./company/active-company";
 export * from "./marketplace";
 export * from "./network";

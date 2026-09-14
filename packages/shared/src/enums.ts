@@ -241,3 +241,24 @@ export const LoadReleaseStatus = {
   CANCELLED: "CANCELLED",
 } as const;
 export type LoadReleaseStatus = (typeof LoadReleaseStatus)[keyof typeof LoadReleaseStatus];
+
+// --- Commercial agreement (Milestone 4 Phase 5) ------------------------------
+
+/** The shipper's chosen commercial posture, set at create/edit time (DRAFT
+ *  only). PUBLISH_RATE carries a binding `Load.postedRate`; REQUEST_OFFERS
+ *  never does. Independent of the freight-audience strategy (WHO can see the
+ *  load) — this is WHAT they see once they can. */
+export const LoadCommercialMode = {
+  PUBLISH_RATE: "PUBLISH_RATE",
+  REQUEST_OFFERS: "REQUEST_OFFERS",
+} as const;
+export type LoadCommercialMode = (typeof LoadCommercialMode)[keyof typeof LoadCommercialMode];
+
+/** Which action produced round 1 of an OfferThread. Default CARRIER_OFFER is
+ *  truthful for every thread created before this feature shipped. */
+export const OfferThreadOriginType = {
+  CARRIER_OFFER: "CARRIER_OFFER",
+  POSTED_RATE_BOOKING: "POSTED_RATE_BOOKING",
+} as const;
+export type OfferThreadOriginType =
+  (typeof OfferThreadOriginType)[keyof typeof OfferThreadOriginType];

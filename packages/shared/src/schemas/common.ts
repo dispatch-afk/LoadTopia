@@ -41,7 +41,14 @@ export const positiveMoneySchema = z
   .regex(/^\d{1,7}(\.\d{1,2})?$/, "must be a positive amount with up to 2 decimal places")
   .refine((v) => Number.parseFloat(v) > 0, "must be greater than zero");
 
-export const currencySchema = z.string().length(3).toUpperCase().default("USD");
+/**
+ * USD-only is a platform-wide product invariant (Milestone 4 Phase 5), not a
+ * per-request default — every freight commercial value (offers, counters,
+ * posted rates, booked rates, Rate Confirmations) is USD. No client input may
+ * ever select a different currency; this schema rejects anything else at the
+ * wire boundary rather than merely defaulting.
+ */
+export const currencySchema = z.literal("USD").default("USD");
 
 // --- Address components (US/CA freight) ------------------------------------
 export const stateSchema = z

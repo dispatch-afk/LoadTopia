@@ -11,11 +11,13 @@ import type {
   EquipmentType,
   LoadAudienceStage,
   LoadAudienceStrategyType,
+  LoadCommercialMode,
   LoadEventType,
   LoadReleaseStatus,
   LoadStatus,
   MarketplaceEligibility,
   OfferEventType,
+  OfferThreadOriginType,
   OfferThreadStatus,
   RateConfirmationStatus,
   TransportMode,
@@ -228,6 +230,17 @@ export interface LoadView {
    *  (no strategy chosen yet) and for a pre-Phase-4 posted load (legacy —
    *  see LoadAudienceView's doc comment). */
   audience: LoadAudienceView | null;
+  /**
+   * Commercial agreement (Milestone 4 Phase 5). `commercialMode` defaults to
+   * REQUEST_OFFERS for every load (including every historical one — see
+   * LoadCommercialMode's doc comment); `postedRate` is the shipper's own
+   * binding USD rate, null unless PUBLISH_RATE. `ratePerMile` is plain
+   * arithmetic (`postedRate / routing.miles`, 2dp) — never a market signal —
+   * present only when both a posted rate and routed miles exist.
+   */
+  commercialMode: LoadCommercialMode;
+  postedRate: string | null;
+  ratePerMile: string | null;
   createdAt: string;
   updatedAt: string;
   events: LoadEventView[];
@@ -292,6 +305,38 @@ export interface AudiencePreviewView {
    *  group members failed current revalidation (not ACCEPTED-connected, or
    *  blocked) and would be silently dropped from the snapshot at posting. */
   ineligibleSelectedCount: number;
+}
+
+// --- Shipments workspaces (Milestone 4 Phase 5) -----------------------------
+
+/**
+ * One row in a Shipments table — the SAME underlying Load record shown from
+ * a post-coverage, operational point of view (see the Load -> Shipment
+ * product decision: no separate Shipment entity). Shared shape for both the
+ * shipper's "Shipments" list and the carrier's "My Shipments" list; each
+ * endpoint scopes and authorizes its own rows independently.
+ */
+export interface ShipmentListItem {
+  id: string;
+  referenceNumber: string;
+  status: LoadStatus;
+  origin: { city: string; state: string };
+  destination: { city: string; state: string };
+  pickupWindowStart: string | null;
+  pickupWindowEnd: string | null;
+  deliveryWindowStart: string | null;
+  deliveryWindowEnd: string | null;
+  shipperCompanyId: string;
+  shipperName: string;
+  carrierCompanyId: string | null;
+  carrierName: string | null;
+  /** The accepted USD rate, once awarded — the same value as
+   *  `LoadView.marketplace.award.amount`. */
+  bookedRate: string | null;
+  /** Deterministic, factual copy for "what happens next" — see
+   *  `shipmentNextAction` in @loadtopia/domain. Never invents urgency. */
+  nextAction: string;
+  updatedAt: string;
 }
 
 // --- Operations (Milestone 3): manual check-ins ------------------------ ---
@@ -497,6 +542,15 @@ export interface MarketplaceLoadListItem {
   postedAt: string | null;
   /** This carrier's negotiation on this load, if any. */
   myThread: OfferThreadSummary | null;
+  /**
+   * Commercial agreement (Milestone 4 Phase 5). REQUEST_OFFERS loads always
+   * carry `postedRate: null` — there is no binding shipper price to show,
+   * only the option to Submit Offer. `ratePerMile` is factual arithmetic
+   * only (`postedRate / miles`, 2dp), never labeled good/bad/competitive.
+   */
+  commercialMode: LoadCommercialMode;
+  postedRate: string | null;
+  ratePerMile: string | null;
 }
 
 export interface MarketplaceLoadView extends MarketplaceLoadListItem {
@@ -539,6 +593,10 @@ export interface OfferThreadSummary {
   /** True when it is this viewer's turn to respond to the current round. */
   awaitingMyResponse: boolean;
   carrier: { companyId: string; name: string } | null;
+  /** How round 1 originated (Milestone 4 Phase 5) — a carrier's own offer, or
+   *  a synthesized round representing the shipper's posted rate that this
+   *  carrier booked. Never implies a negotiation that did not happen. */
+  originType: OfferThreadOriginType;
   updatedAt: string;
 }
 
