@@ -346,7 +346,7 @@ suite("routing provider provenance + posting safety (integration)", () => {
       await googleApi.close();
     });
 
-    it("a grandfathered mock-routed POSTED load still completes the full offer/award/assign lifecycle under a real provider (proves the new guard is non-retroactive)", async () => {
+    it("a grandfathered mock-routed POSTED load still completes the full offer/award/auto-assign lifecycle under a real provider (proves the new guard is non-retroactive)", async () => {
       const mockApi = await makeAppWithProviders(prisma, allMockProviders());
       const s = await shipperWithLocations(mockApi);
       const created = await mockApi.inject(
@@ -393,10 +393,12 @@ suite("routing provider provenance + posting safety (integration)", () => {
       );
       expect(accept.statusCode).toBe(200);
 
-      const assign = await googleApi.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${id}/assign` }));
-      expect(assign.statusCode).toBe(200);
-      expect(assign.json().status).toBe("CARRIER_ASSIGNED");
-      expect(assign.json().routing.isMock).toBe(true); // still historically mock, never rewritten
+      // Milestone 4 Phase 5: acceptance already auto-assigned in the same
+      // transaction — no separate /assign call.
+      const after = await googleApi.inject(authed(s.cookie, { method: "GET", url: `/api/loads/${id}` }));
+      expect(after.statusCode).toBe(200);
+      expect(after.json().status).toBe("CARRIER_ASSIGNED");
+      expect(after.json().routing.isMock).toBe(true); // still historically mock, never rewritten
       await googleApi.close();
     });
   });

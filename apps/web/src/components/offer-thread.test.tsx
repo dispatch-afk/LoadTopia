@@ -36,6 +36,16 @@ describe("OfferThread", () => {
     expect(screen.queryByRole("button", { name: "Withdraw" })).not.toBeInTheDocument();
   });
 
+  it("shows a Booked at posted rate badge only for a booking-originated thread", () => {
+    const negotiated = buildOfferThreadView({ originType: "CARRIER_OFFER" });
+    const { rerender } = render(<OfferThread thread={negotiated} />);
+    expect(screen.queryByText("Booked at posted rate")).not.toBeInTheDocument();
+
+    const booked = buildOfferThreadView({ originType: "POSTED_RATE_BOOKING" });
+    rerender(<OfferThread thread={booked} />);
+    expect(screen.getByText("Booked at posted rate")).toBeInTheDocument();
+  });
+
   it("formats the current amount with the shared money formatter", () => {
     const thread = buildOfferThreadView({ currentAmount: "1750.5", currentCurrency: "USD" });
     render(<OfferThread thread={thread} />);

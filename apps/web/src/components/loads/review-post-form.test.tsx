@@ -59,6 +59,30 @@ describe("ReviewPostForm", () => {
     refresh.mockReset();
   });
 
+  it("shows the exact commercial terms about to be published — Publish a Rate", async () => {
+    apiClient.mockResolvedValue(previewResponse());
+    const load = buildLoadView({
+      status: "DRAFT",
+      commercialMode: "PUBLISH_RATE",
+      postedRate: "4000.00",
+      ratePerMile: "2.18",
+    });
+    render(<ReviewPostForm load={load} connections={[]} groups={[]} />);
+
+    expect(screen.getByText("Publish a Rate")).toBeInTheDocument();
+    expect(screen.getByText("$4,000.00")).toBeInTheDocument();
+    expect(screen.getByText("$2.18/mi")).toBeInTheDocument();
+  });
+
+  it("shows Request Carrier Offers with no rate when that mode is chosen", async () => {
+    apiClient.mockResolvedValue(previewResponse());
+    const load = buildLoadView({ status: "DRAFT", commercialMode: "REQUEST_OFFERS", postedRate: null });
+    render(<ReviewPostForm load={load} connections={[]} groups={[]} />);
+
+    expect(screen.getByText("Request Carrier Offers")).toBeInTheDocument();
+    expect(screen.queryByText(/\$\d/)).not.toBeInTheDocument();
+  });
+
   it("defaults to Marketplace and posts with that strategy behind a confirmation", async () => {
     const user = userEvent.setup();
     apiClient.mockImplementation((path: string) =>

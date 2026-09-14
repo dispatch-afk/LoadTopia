@@ -376,7 +376,10 @@ suite("marketplace (integration)", () => {
     expect(accept.json().status).toBe("ACCEPTED");
 
     const load = await prisma.load.findUniqueOrThrow({ where: { id: loadId } });
-    expect(load.status).toBe("AWARDED");
+    // Milestone 4 Phase 5: acceptance auto-assigns, in the same transaction
+    // as the award itself — the load never rests at AWARDED.
+    expect(load.status).toBe("CARRIER_ASSIGNED");
+    expect(load.assignedAt).not.toBeNull();
     expect(load.carrierCompanyId).toBe(c1.companyId);
     expect(load.bookedRate?.toFixed(2)).toBe("1800.00");
     expect(load.awardedOfferRoundId).toBe(winningRound);
@@ -393,10 +396,17 @@ suite("marketplace (integration)", () => {
     const board = await api.inject(authed(c2.cookie, { method: "GET", url: "/api/marketplace/loads" }));
     expect(board.json().data).toHaveLength(0);
 
-    // Assign: AWARDED -> CARRIER_ASSIGNED.
+    // Both AWARDED and CARRIER_ASSIGNED were written as separate, distinct
+    // immutable events — not merged, even though they happened atomically.
+    const events = await prisma.loadEvent.findMany({
+      where: { loadId, type: "STATUS_CHANGED", toStatus: { in: ["AWARDED", "CARRIER_ASSIGNED"] } },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(events.map((e) => e.toStatus)).toEqual(["AWARDED", "CARRIER_ASSIGNED"]);
+
+    // The legacy /assign endpoint is now a no-op-rejected recovery path only.
     const assign = await api.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }));
-    expect(assign.statusCode).toBe(200);
-    expect(assign.json().status).toBe("CARRIER_ASSIGNED");
+    expect(assign.statusCode).toBe(409);
   });
 
   // ── awarded-load carrier visibility (hotfix/m2-carrier-awarded-load) ──
@@ -422,7 +432,8 @@ suite("marketplace (integration)", () => {
     // Winner: 200 via the authenticated load endpoint, with its own award data.
     const w = await api.inject(authed(winner.cookie, { method: "GET", url: `/api/loads/${loadId}` }));
     expect(w.statusCode).toBe(200);
-    expect(w.json().status).toBe("AWARDED");
+    // Milestone 4 Phase 5: acceptance auto-assigns in the same transaction.
+    expect(w.json().status).toBe("CARRIER_ASSIGNED");
     expect(w.json().marketplace.award.carrierCompanyId).toBe(winner.companyId);
     expect(w.json().marketplace.award.amount).toBe("1800.00");
     // No competitor offer data leaks through the load view.
@@ -491,13 +502,11 @@ suite("marketplace (integration)", () => {
     const outsider = await carrier({ name: "Bystander Co" });
 
     const t = (await makeOffer(winner, loadId, "1900.00")).json();
-    await api.inject(
+    const accept = await api.inject(
       authed(s.cookie, { method: "POST", url: `/api/offers/rounds/${t.rounds[0].id}/accept` }),
     );
-    const assign = await api.inject(
-      authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }),
-    );
-    expect(assign.json().status).toBe("CARRIER_ASSIGNED");
+    // Milestone 4 Phase 5: acceptance already auto-assigned — no /assign call.
+    expect(accept.statusCode).toBe(200);
 
     const w = await api.inject(authed(winner.cookie, { method: "GET", url: `/api/loads/${loadId}` }));
     expect(w.statusCode).toBe(200);
@@ -649,7 +658,8 @@ suite("marketplace (integration)", () => {
     expect(threads.filter((t) => t.status === "REJECTED")).toHaveLength(1);
 
     const load = await prisma.load.findUniqueOrThrow({ where: { id: loadId } });
-    expect(load.status).toBe("AWARDED");
+    // Milestone 4 Phase 5: the winning transaction also auto-assigns.
+    expect(load.status).toBe("CARRIER_ASSIGNED");
     // Exactly one carrier assignment.
     expect(load.carrierCompanyId).toBeTruthy();
 
@@ -657,6 +667,10 @@ suite("marketplace (integration)", () => {
       where: { loadId, type: "STATUS_CHANGED", toStatus: "AWARDED" },
     });
     expect(awardEvents).toHaveLength(1);
+    const assignEvents = await prisma.loadEvent.findMany({
+      where: { loadId, type: "STATUS_CHANGED", toStatus: "CARRIER_ASSIGNED" },
+    });
+    expect(assignEvents).toHaveLength(1);
   });
 
   it("concurrent duplicate first offers by one carrier → a single thread", async () => {

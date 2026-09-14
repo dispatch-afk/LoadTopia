@@ -59,6 +59,9 @@ export function buildLoadView(overrides: Partial<LoadView> = {}): LoadView {
     completedAt: null,
     marketplace: { onMarket: false, activeOfferCount: 0, award: null },
     audience: null,
+    commercialMode: "REQUEST_OFFERS",
+    postedRate: null,
+    ratePerMile: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     events: [],
@@ -77,6 +80,7 @@ export function buildOfferThreadView(overrides: Partial<OfferThreadView> = {}): 
     currentExpiresAt: "2026-01-02T00:00:00.000Z",
     awaitingMyResponse: true,
     carrier: { companyId: "carrier-1", name: "Acme Trucking" },
+    originType: "CARRIER_OFFER",
     updatedAt: "2026-01-01T00:00:00.000Z",
     load: {
       id: "load-1",
