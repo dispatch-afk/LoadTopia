@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { LoadStatus, LoadView, MeResponse } from "@loadtopia/shared";
+import type { DocumentView, LoadStatus, LoadView, MeResponse } from "@loadtopia/shared";
 import {
   LOAD_EVENT_LABELS,
   canCompleteShipment,
@@ -8,6 +8,7 @@ import {
   canUploadDocument,
   carrierMovementAction,
   completionBlockedReason,
+  customerFacingStage,
   formatFileSize,
   formatReportedCoordinates,
   shipmentProgress,
@@ -22,6 +23,7 @@ function loadView(overrides: Partial<LoadView> = {}): LoadView {
     referenceNumber: "LT-1001",
     status: "CARRIER_ASSIGNED",
     shipperCompanyId: "co-shipper",
+    shipperName: "Shipper Co",
     equipmentType: "DRY_VAN",
     mode: "FTL",
     commodity: "Pallured goods",
@@ -60,6 +62,7 @@ function loadView(overrides: Partial<LoadView> = {}): LoadView {
     commercialMode: "REQUEST_OFFERS",
     postedRate: null,
     ratePerMile: null,
+    shipmentNextAction: null,
     createdAt: "2026-08-30T00:00:00.000Z",
     updatedAt: "2026-09-02T12:00:00.000Z",
     events: [],
@@ -321,4 +324,82 @@ describe("LOAD_EVENT_LABELS covers the M3 event types (no raw JSON in the timeli
       expect(LOAD_EVENT_LABELS[t]).not.toMatch(/[_{}]/);
     });
   }
+});
+
+describe("customerFacingStage", () => {
+  function pod(overrides: Partial<DocumentView> = {}): DocumentView {
+    return {
+      id: "doc-1",
+      loadId: "load-1",
+      docType: "POD",
+      status: "CONFIRMED",
+      contentType: "application/pdf",
+      sizeBytes: 100,
+      originalFilename: "pod.pdf",
+      reviewStatus: "PENDING_REVIEW",
+      reviewReason: null,
+      replacesDocumentId: null,
+      uploadedByUserId: "user-1",
+      uploadedByCompanyId: "co-carrier",
+      confirmedAt: "2026-01-01T00:00:00.000Z",
+      removedAt: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("is a plain, factual label for every non-DELIVERED status — presentation only, never a new Load.status", () => {
+    expect(customerFacingStage(loadView({ status: "AWARDED" }), [])).toBe("Awarded");
+    expect(customerFacingStage(loadView({ status: "CARRIER_ASSIGNED" }), [])).toBe(
+      "Awaiting Pickup",
+    );
+    expect(customerFacingStage(loadView({ status: "PICKED_UP" }), [])).toBe("Picked Up");
+    expect(customerFacingStage(loadView({ status: "IN_TRANSIT" }), [])).toBe("In Transit");
+    expect(customerFacingStage(loadView({ status: "COMPLETED" }), [])).toBe("Completed");
+    expect(customerFacingStage(loadView({ status: "CANCELLED" }), [])).toBe("Cancelled");
+  });
+
+  it("stays 'Delivered' at DELIVERED until a POD has actually been uploaded", () => {
+    expect(customerFacingStage(loadView({ status: "DELIVERED" }), [])).toBe("Delivered");
+    // A BOL or OTHER document never counts — only POD moves the needle.
+    expect(customerFacingStage(loadView({ status: "DELIVERED" }), [pod({ docType: "BOL" })])).toBe(
+      "Delivered",
+    );
+  });
+
+  it("becomes 'POD Review' once an active POD exists, regardless of its review outcome", () => {
+    for (const reviewStatus of ["PENDING_REVIEW", "APPROVED", "REJECTED"] as const) {
+      expect(
+        customerFacingStage(loadView({ status: "DELIVERED" }), [pod({ reviewStatus })]),
+      ).toBe("POD Review");
+    }
+  });
+
+  it("ignores an unconfirmed or removed POD — it is not yet (or no longer) an active document", () => {
+    expect(
+      customerFacingStage(loadView({ status: "DELIVERED" }), [pod({ confirmedAt: null })]),
+    ).toBe("Delivered");
+    expect(
+      customerFacingStage(loadView({ status: "DELIVERED" }), [
+        pod({ removedAt: "2026-01-02T00:00:00.000Z" }),
+      ]),
+    ).toBe("Delivered");
+  });
+
+  it("an already-APPROVED POD plus a later, unrelated PENDING/REJECTED POD still shows POD Review, never the misleading 'Delivered'", () => {
+    // Existence-based (`.some`), not "latest wins" — this function was never
+    // subject to the POD-ordering bug fixed in deriveShipmentPodState, since
+    // it only asks "does any active POD exist," not "what does the latest
+    // one say." Verified explicitly here as the completion-authority fix's
+    // cross-check for the customer-facing stage.
+    const approved = pod({ reviewStatus: "APPROVED", createdAt: "2026-01-01T00:00:00.000Z" });
+    const laterPending = pod({
+      id: "doc-2",
+      reviewStatus: "PENDING_REVIEW",
+      createdAt: "2026-01-02T00:00:00.000Z",
+    });
+    expect(customerFacingStage(loadView({ status: "DELIVERED" }), [approved, laterPending])).toBe(
+      "POD Review",
+    );
+  });
 });

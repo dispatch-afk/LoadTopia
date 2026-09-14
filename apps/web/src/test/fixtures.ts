@@ -5,6 +5,7 @@ import type {
   LoadView,
   LocationView,
   OfferThreadView,
+  RateConfirmationView,
 } from "@loadtopia/shared";
 
 function location(overrides: Partial<LocationView> = {}): LocationView {
@@ -37,6 +38,7 @@ export function buildLoadView(overrides: Partial<LoadView> = {}): LoadView {
     referenceNumber: "LT-0001",
     status: "DRAFT",
     shipperCompanyId: "company-1",
+    shipperName: "Shipper Co",
     equipmentType: "DRY_VAN",
     mode: "FTL",
     commodity: null,
@@ -62,6 +64,7 @@ export function buildLoadView(overrides: Partial<LoadView> = {}): LoadView {
     commercialMode: "REQUEST_OFFERS",
     postedRate: null,
     ratePerMile: null,
+    shipmentNextAction: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     events: [],
@@ -107,6 +110,49 @@ export function buildOfferThreadView(overrides: Partial<OfferThreadView> = {}): 
     ],
     events: [],
     actions: { canCounter: true, canAccept: true, canReject: true, canWithdraw: false },
+    ...overrides,
+  };
+}
+
+export function buildRateConfirmationView(
+  overrides: Partial<RateConfirmationView> = {},
+): RateConfirmationView {
+  return {
+    loadId: "load-1",
+    referenceNumber: "LT-0001",
+    status: "GENERATED",
+    awardedAt: "2026-01-01T00:00:00.000Z",
+    agreedRate: "1500.00",
+    currency: "USD",
+    distanceMeters: 400000,
+    shipper: { companyName: "Shipper Co", mcNumber: null, dotNumber: null },
+    carrier: { companyName: "Carrier Co", legalName: "Carrier Co LLC", mcNumber: null, dotNumber: null },
+    origin: {
+      addressLine1: "1 Main St",
+      addressLine2: null,
+      city: "Dallas",
+      state: "TX",
+      postalCode: "75201",
+      country: "US",
+    },
+    destination: {
+      addressLine1: "2 Elm St",
+      addressLine2: null,
+      city: "Houston",
+      state: "TX",
+      postalCode: "77001",
+      country: "US",
+    },
+    pickupWindowStart: null,
+    pickupWindowEnd: null,
+    deliveryWindowStart: null,
+    deliveryWindowEnd: null,
+    equipmentType: "DRY_VAN",
+    commodity: null,
+    weightLbs: null,
+    agreementSource: "CARRIER_OFFER",
+    download: { url: "https://example.test/rc.pdf", expiresAt: "2026-01-02T00:00:00.000Z" },
+    documentPending: false,
     ...overrides,
   };
 }
