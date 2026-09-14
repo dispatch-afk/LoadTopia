@@ -13,30 +13,19 @@ import { LoadActions } from "@/components/load-actions";
 import { OfferThread } from "@/components/offer-thread";
 import { AssignCarrierButton } from "@/components/assign-carrier-button";
 import { AudiencePanel } from "@/components/loads/audience-panel";
-import { ShipmentProgress } from "@/components/operations/shipment-progress";
-import { CheckInsPanel } from "@/components/operations/check-ins-panel";
-import { DocumentsPanel } from "@/components/operations/documents-panel";
-import { RateConfirmationPanel } from "@/components/operations/rate-confirmation-panel";
+import { ShipmentDetail } from "@/components/operations/shipment-detail";
+import { ShipmentTimeline } from "@/components/operations/shipment-timeline";
 import { ShipperCompleteAction } from "@/components/operations/shipper-complete-action";
 import { requireMe } from "@/lib/session";
 import {
   canRecordCheckIn,
   canReviewPod,
   canUploadDocument,
-  LOAD_EVENT_LABELS,
   shouldShowOperations,
   viewerRoleForLoad,
 } from "@/lib/operations";
 import { fetchCheckIns, fetchDocuments, fetchRateConfirmation } from "@/lib/operations-data";
-import {
-  fmtDateTime,
-  fmtDriveTime,
-  fmtMiles,
-  fmtMoney,
-  fmtWeight,
-  fmtWindow,
-  titleCase,
-} from "@/lib/format";
+import { fmtDateTime, fmtDriveTime, fmtMiles, fmtMoney, fmtWeight, fmtWindow, titleCase } from "@/lib/format";
 
 async function safe<T>(p: Promise<T>, fallback: T): Promise<T> {
   try {
@@ -76,7 +65,9 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
   }
 
   // Marketplace negotiations on this load (shipper-scoped). Best-effort so a
-  // pre-marketplace load still renders.
+  // pre-marketplace load still renders. Private to the shipper — never shown
+  // to the carrier, and deliberately kept OUTSIDE the shared Shipment Detail
+  // composition below (see ShipmentDetail's doc comment).
   const { data: threadSummaries } = await safe(
     apiServer<{ data: OfferThreadSummary[] }>(`/api/loads/${id}/offers`),
     { data: [] as OfferThreadSummary[] },
@@ -100,8 +91,8 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
     ? await Promise.all([fetchCheckIns(id), fetchDocuments(id), fetchRateConfirmation(id)])
     : [[], [], null];
 
-  return (
-    <div>
+  const header = (
+    <>
       <PageHeader
         title={load.referenceNumber}
         subtitle={`Created ${fmtDateTime(load.createdAt)} · updated ${fmtDateTime(load.updatedAt)}`}
@@ -110,16 +101,114 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
       <Link href="/loads" className="mb-4 inline-block text-sm text-brand-600 hover:underline">
         ← All loads
       </Link>
+    </>
+  );
+
+  // ── Operational shipment (covered freight — CARRIER_ASSIGNED or later, or
+  // a historical AWARDED-only legacy record): the shared, role-aware
+  // Shipment Detail (Milestone 4 Phase 6). Commercial negotiation history
+  // (Offers/threads/audience) is shipper-private and stays a separate
+  // section below it, never inside the shared composition. ──
+  if (showOps) {
+    return (
+      <div>
+        {header}
+
+        <ShipmentDetail
+          load={load}
+          checkIns={checkIns}
+          documents={documents}
+          rateConfirmation={rateConfirmation}
+          viewerCompanyId={me.activeCompanyId}
+          canRecordCheckIn={canRecordCheckIn(me, load)}
+          canUploadDocument={canUploadDocument(me, load)}
+          canReviewPod={canReviewPod(me, load)}
+          actions={
+            <div className="space-y-3">
+              <LoadActions load={load} />
+              {(viewerRole === "shipper" || viewerRole === "admin") && (
+                <ShipperCompleteAction load={load} />
+              )}
+            </div>
+          }
+        />
+
+        {(threads.length > 0 || pricing.length > 0 || load.status === "AWARDED" || load.audience) && (
+          <div className="mt-6 grid gap-6 lg:grid-cols-3">
+            <div className="space-y-6 lg:col-span-2">
+              {(threads.length > 0 || load.status === "AWARDED") && (
+                <Card className="p-5">
+                  <h2 className="mb-4 text-sm font-semibold text-ink">
+                    Offers{" "}
+                    <span className="text-muted">({load.marketplace.activeOfferCount} active)</span>
+                  </h2>
+                  {load.status === "AWARDED" && (
+                    <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm">
+                      <p className="mb-1.5 text-xs text-emerald-800">
+                        This load predates automatic carrier assignment.
+                      </p>
+                      <AssignCarrierButton loadId={load.id} />
+                    </div>
+                  )}
+                  {threads.length === 0 ? (
+                    <p className="text-sm text-muted">No offers yet.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {threads.map((t) => (
+                        <OfferThread key={t.threadId} thread={t} />
+                      ))}
+                    </div>
+                  )}
+                </Card>
+              )}
+
+              {pricing.length > 0 && (
+                <Card className="p-5">
+                  <h2 className="mb-3 text-sm font-semibold text-ink">Pricing snapshots</h2>
+                  <div className="space-y-2">
+                    {pricing.map((p) => (
+                      <div key={p.id} className="rounded-lg border border-line p-3 text-sm">
+                        <p>
+                          <span className="font-medium">{fmtMoney(p.midRate, p.currency)}</span>{" "}
+                          <span className="text-muted">
+                            ({fmtMoney(p.lowRate, p.currency)}–{fmtMoney(p.highRate, p.currency)}) ·{" "}
+                            {p.confidence} confidence
+                          </span>
+                        </p>
+                        <p className="text-xs text-muted">
+                          {p.provider}
+                          {p.isMock && " — MOCK development data, not real market pricing"} ·{" "}
+                          {fmtDateTime(p.createdAt)}
+                        </p>
+                        {p.disclaimer && <p className="mt-1 text-xs text-muted">{p.disclaimer}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              )}
+            </div>
+
+            <div className="space-y-6">
+              {load.audience && (viewerRole === "shipper" || viewerRole === "admin") && (
+                <Card className="p-5">
+                  <AudiencePanel load={load} canManage={viewerRole === "shipper" || viewerRole === "admin"} />
+                </Card>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Pre-operational (DRAFT/POSTED/OFFER_RECEIVED, or CANCELLED before any
+  // award) — unchanged commercial-only load detail. ──
+  return (
+    <div>
+      {header}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
-          {showOps && (
-            <Card className="p-5">
-              <h2 className="mb-4 text-sm font-semibold text-ink">Shipment progress</h2>
-              <ShipmentProgress load={load} />
-            </Card>
-          )}
-
           <Card className="p-5">
             <h2 className="mb-4 text-sm font-semibold text-ink">Load details</h2>
             <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -152,31 +241,6 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
             )}
           </Card>
 
-          {showOps && (
-            <Card className="p-5">
-              <h2 className="mb-4 text-sm font-semibold text-ink">Check-ins</h2>
-              <CheckInsPanel
-                loadId={load.id}
-                checkIns={checkIns}
-                canRecord={canRecordCheckIn(me, load)}
-              />
-            </Card>
-          )}
-
-          {showOps && (
-            <Card className="p-5">
-              <h2 className="mb-4 text-sm font-semibold text-ink">Documents</h2>
-              <DocumentsPanel
-                loadId={load.id}
-                documents={documents}
-                shipperCompanyId={load.shipperCompanyId}
-                activeCompanyId={me.activeCompanyId}
-                canUpload={canUploadDocument(me, load)}
-                canReview={canReviewPod(me, load)}
-              />
-            </Card>
-          )}
-
           {(threads.length > 0 || load.marketplace.onMarket || award) && (
             <Card className="p-5">
               <div className="mb-4 flex items-center justify-between">
@@ -187,28 +251,6 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
                   </span>
                 </h2>
               </div>
-
-              {award && (
-                <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm">
-                  <p className="font-medium text-emerald-900">
-                    Awarded to {award.carrierName} · {fmtMoney(award.amount, award.currency)}
-                  </p>
-                  <p className="text-xs text-emerald-800">
-                    Awarded {fmtDateTime(award.awardedAt)}
-                    {award.assignedAt
-                      ? ` · carrier assigned ${fmtDateTime(award.assignedAt)}`
-                      : ""}
-                  </p>
-                  {load.status === "AWARDED" && (
-                    <div className="mt-2">
-                      <p className="mb-1.5 text-xs text-emerald-800">
-                        This load predates automatic carrier assignment.
-                      </p>
-                      <AssignCarrierButton loadId={load.id} />
-                    </div>
-                  )}
-                </div>
-              )}
 
               {threads.length === 0 ? (
                 <p className="text-sm text-muted">No offers yet.</p>
@@ -249,29 +291,7 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
 
           <Card className="p-5">
             <h2 className="mb-4 text-sm font-semibold text-ink">Timeline</h2>
-            <ol className="space-y-3">
-              {load.events.map((e) => (
-                <li key={e.id} className="flex gap-3 text-sm">
-                  <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-brand-400" />
-                  <div>
-                    <p className="text-ink">
-                      {LOAD_EVENT_LABELS[e.type] ?? titleCase(e.type)}
-                      {e.fromStatus && e.toStatus && (
-                        <span className="text-muted">
-                          {" "}
-                          · {titleCase(e.fromStatus)} → {titleCase(e.toStatus)}
-                        </span>
-                      )}
-                    </p>
-                    {e.note && <p className="text-muted">“{e.note}”</p>}
-                    <p className="text-xs text-muted">
-                      {fmtDateTime(e.createdAt)}
-                      {e.actorName && ` · ${e.actorName}`}
-                    </p>
-                  </div>
-                </li>
-              ))}
-            </ol>
+            <ShipmentTimeline events={load.events} />
           </Card>
         </div>
 
@@ -280,22 +300,12 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
             <h2 className="mb-3 text-sm font-semibold text-ink">Actions</h2>
             <div className="space-y-3">
               <LoadActions load={load} />
-              {showOps && (viewerRole === "shipper" || viewerRole === "admin") && (
-                <ShipperCompleteAction load={load} />
-              )}
             </div>
           </Card>
 
           {load.audience && (viewerRole === "shipper" || viewerRole === "admin") && (
             <Card className="p-5">
               <AudiencePanel load={load} canManage={viewerRole === "shipper" || viewerRole === "admin"} />
-            </Card>
-          )}
-
-          {showOps && rateConfirmation !== null && (
-            <Card className="p-5">
-              <h2 className="mb-3 text-sm font-semibold text-ink">Rate Confirmation</h2>
-              <RateConfirmationPanel loadId={load.id} state={rateConfirmation} />
             </Card>
           )}
         </div>

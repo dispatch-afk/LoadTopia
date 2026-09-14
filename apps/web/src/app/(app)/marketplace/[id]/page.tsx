@@ -11,11 +11,8 @@ import { Alert, Badge, Card, PageHeader } from "@/components/ui";
 import { OfferThread } from "@/components/offer-thread";
 import { CreateOfferForm } from "@/components/create-offer-form";
 import { BookAtPostedRateButton } from "@/components/book-at-posted-rate-button";
-import { ShipmentProgress } from "@/components/operations/shipment-progress";
-import { CheckInsPanel } from "@/components/operations/check-ins-panel";
-import { DocumentsPanel } from "@/components/operations/documents-panel";
+import { ShipmentDetail } from "@/components/operations/shipment-detail";
 import { CarrierShipmentActions } from "@/components/operations/carrier-shipment-actions";
-import { RateConfirmationPanel } from "@/components/operations/rate-confirmation-panel";
 import { requireMe } from "@/lib/session";
 import {
   canRecordCheckIn,
@@ -91,14 +88,18 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
     ? await safe(apiServer<OfferThreadView>(`/api/offers/threads/${summary.threadId}`), null)
     : null;
 
-  // ── Operational load (assigned / in motion / delivered / completed) ──
+  // ── Operational shipment (assigned / in motion / delivered / completed) —
+  // the SAME shared, role-aware Shipment Detail the shipper's /loads/:id
+  // uses for covered freight (Milestone 4 Phase 6). Private negotiation
+  // ("Your negotiation" — this carrier's OWN thread only, never a
+  // competitor's) stays outside it, exactly as the shipper's private Offers
+  // section does on the other route. ──
   if (load && shouldShowOperations(load)) {
     const [checkIns, documents, rateConfirmation] = await Promise.all([
       fetchCheckIns(id),
       fetchDocuments(id),
       fetchRateConfirmation(id),
     ]);
-    const award = load.marketplace.award;
     const viewerRole = viewerRoleForLoad(me, load);
     const showCarrierActions = viewerRole === "carrier" || viewerRole === "admin";
 
@@ -115,101 +116,32 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
           ← Marketplace
         </Link>
 
-        <div className="grid gap-6 lg:grid-cols-3">
-          <div className="space-y-6 lg:col-span-2">
-            <Card className="p-5">
-              <h2 className="mb-4 text-sm font-semibold text-ink">Shipment progress</h2>
-              <ShipmentProgress load={load} />
-            </Card>
+        <ShipmentDetail
+          load={load}
+          checkIns={checkIns}
+          documents={documents}
+          rateConfirmation={rateConfirmation}
+          viewerCompanyId={me.activeCompanyId}
+          canRecordCheckIn={canRecordCheckIn(me, load)}
+          canUploadDocument={canUploadDocument(me, load)}
+          canReviewPod={canReviewPod(me, load)}
+          actions={
+            showCarrierActions ? (
+              <CarrierShipmentActions load={load} />
+            ) : (
+              <p className="text-sm text-muted">No actions available for this account.</p>
+            )
+          }
+        />
 
+        {thread && (
+          <div className="mt-6">
             <Card className="p-5">
-              <h2 className="mb-4 text-sm font-semibold text-ink">Load details</h2>
-              <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <Detail
-                  label="Origin"
-                  value={`${load.origin.city}, ${load.origin.state}`}
-                />
-                <Detail
-                  label="Destination"
-                  value={`${load.destination.city}, ${load.destination.state}`}
-                />
-                <Detail label="Equipment" value={titleCase(load.equipmentType)} />
-                <Detail label="Mode" value={load.mode} />
-                <Detail label="Commodity" value={load.commodity ?? "—"} />
-                <Detail label="Weight" value={fmtWeight(load.weightLbs)} />
-                <Detail
-                  label="Pickup"
-                  value={fmtWindow(load.pickupWindowStart, load.pickupWindowEnd)}
-                />
-                <Detail
-                  label="Delivery"
-                  value={fmtWindow(load.deliveryWindowStart, load.deliveryWindowEnd)}
-                />
-                <Detail label="Distance" value={fmtMiles(load.routing.miles)} />
-              </dl>
+              <h2 className="mb-4 text-sm font-semibold text-ink">Your negotiation</h2>
+              <OfferThread thread={thread} />
             </Card>
-
-            <Card className="p-5">
-              <h2 className="mb-4 text-sm font-semibold text-ink">Check-ins</h2>
-              <CheckInsPanel
-                loadId={load.id}
-                checkIns={checkIns}
-                canRecord={canRecordCheckIn(me, load)}
-              />
-            </Card>
-
-            <Card className="p-5">
-              <h2 className="mb-4 text-sm font-semibold text-ink">Documents</h2>
-              <DocumentsPanel
-                loadId={load.id}
-                documents={documents}
-                shipperCompanyId={load.shipperCompanyId}
-                activeCompanyId={me.activeCompanyId}
-                canUpload={canUploadDocument(me, load)}
-                canReview={canReviewPod(me, load)}
-              />
-            </Card>
-
-            {thread && (
-              <Card className="p-5">
-                <h2 className="mb-4 text-sm font-semibold text-ink">Your negotiation</h2>
-                <OfferThread thread={thread} />
-              </Card>
-            )}
           </div>
-
-          <div className="space-y-6">
-            {showCarrierActions && (
-              <Card className="p-5">
-                <h2 className="mb-3 text-sm font-semibold text-ink">Shipment actions</h2>
-                <CarrierShipmentActions load={load} />
-              </Card>
-            )}
-
-            {award && (
-              <Card className="p-5">
-                <h2 className="mb-2 text-sm font-semibold text-ink">Booking</h2>
-                <p className="text-sm text-ink">
-                  Booked at{" "}
-                  <span className="font-semibold">{fmtMoney(award.amount, award.currency)}</span>
-                </p>
-                <p className="mt-1 text-xs text-muted">
-                  Awarded {fmtDateTime(award.awardedAt)}
-                  {award.assignedAt
-                    ? ` · assigned ${fmtDateTime(award.assignedAt)}`
-                    : " · awaiting shipper assignment"}
-                </p>
-              </Card>
-            )}
-
-            {rateConfirmation !== null && (
-              <Card className="p-5">
-                <h2 className="mb-3 text-sm font-semibold text-ink">Rate Confirmation</h2>
-                <RateConfirmationPanel loadId={load.id} state={rateConfirmation} />
-              </Card>
-            )}
-          </div>
-        </div>
+        )}
       </div>
     );
   }
