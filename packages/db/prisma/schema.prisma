@@ -240,6 +240,30 @@ enum LoadReleaseStatus {
   CANCELLED
 }
 
+// --- Commercial agreement (Milestone 4 Phase 5) -----------------------------
+
+/// The shipper's chosen commercial posture, set at create/edit time (DRAFT
+/// only — see Load.commercialMode). PUBLISH_RATE carries a binding
+/// `Load.postedRate`; REQUEST_OFFERS never does. Independent of
+/// LoadAudienceStrategyType (WHO can see the load) — this is WHAT they see
+/// once they can: a posted price, or an invitation to propose one.
+enum LoadCommercialMode {
+  PUBLISH_RATE
+  REQUEST_OFFERS
+}
+
+/// Which action produced round 1 of an OfferThread. CARRIER_OFFER (the
+/// default, and the only value any pre-Phase-5 thread can truthfully have) is
+/// a carrier's own proposal. POSTED_RATE_BOOKING marks a thread synthesized
+/// by Book at Posted Rate — round 1 is proposed by the SHIPPER company (the
+/// published rate), immediately accepted by the carrier in the same
+/// transaction. Never used to fabricate a negotiation that did not happen —
+/// see OffersService#bookAtPostedRate.
+enum OfferThreadOriginType {
+  CARRIER_OFFER
+  POSTED_RATE_BOOKING
+}
+
 // ---------------------------------------------------------------------------
 // Identity & organizations
 // ---------------------------------------------------------------------------
@@ -524,7 +548,20 @@ model Load {
   // offer round's amount. `offeredRate` remains a reserved placeholder (unused).
   offeredRate Decimal? @map("offered_rate") @db.Decimal(14, 2)
   bookedRate  Decimal? @map("booked_rate") @db.Decimal(14, 2)
+  // USD only — a fixed platform-wide invariant (Milestone 4 Phase 5), not a
+  // per-load choice. Retained (rather than removed) purely for backward
+  // compatibility with the existing column/history; every new commercial
+  // write is always "USD" and no input may ever select otherwise.
   currency    String   @default("USD")
+
+  // Commercial agreement (Milestone 4 Phase 5). Set at create/edit time
+  // (DRAFT only, like every other Load field) — never at Review & Post. See
+  // LoadCommercialMode's doc comment. `postedRate` is the shipper's own
+  // binding published USD rate; null unless commercialMode = PUBLISH_RATE.
+  // Never populated from PricingSnapshot/mock pricing — those are a wholly
+  // separate model with no write path into this column.
+  commercialMode LoadCommercialMode @default(REQUEST_OFFERS) @map("commercial_mode")
+  postedRate     Decimal?           @map("posted_rate") @db.Decimal(14, 2)
 
   // Routing results (via RoutingProvider abstraction).
   distanceMeters   Int?      @map("distance_meters")
@@ -657,6 +694,9 @@ model OfferThread {
   currentRoundId   String?           @unique @map("current_round_id") @db.Uuid
   closedReason     String?           @map("closed_reason")
   closedAt         DateTime?         @map("closed_at") @db.Timestamptz(6)
+  /// How round 1 originated (Milestone 4 Phase 5). Default CARRIER_OFFER is
+  /// truthful for every historical row — see OfferThreadOriginType.
+  originType       OfferThreadOriginType @default(CARRIER_OFFER) @map("origin_type")
   createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
 
