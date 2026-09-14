@@ -198,6 +198,11 @@ export interface LoadView {
   referenceNumber: string;
   status: LoadStatus;
   shipperCompanyId: string;
+  /** The shipper's company name — always present (every load has a shipper),
+   *  unlike `marketplace.award.carrierName` which only exists once awarded.
+   *  Milestone 4 Phase 6: the assigned carrier's operational view needs this
+   *  to know who they're shipping for. */
+  shipperName: string;
   equipmentType: EquipmentType;
   mode: TransportMode;
   commodity: string | null;
@@ -241,6 +246,14 @@ export interface LoadView {
   commercialMode: LoadCommercialMode;
   postedRate: string | null;
   ratePerMile: string | null;
+  /**
+   * Deterministic, factual "what happens next" copy for the CURRENT VIEWER
+   * (Milestone 4 Phase 6) — the same source `ShipmentListItem.nextAction`
+   * uses (`shipmentNextAction` in @loadtopia/domain), so list and detail
+   * never disagree. Null for admin/other viewers (no party is "responsible"
+   * from their seat) and for a load outside the shipment lifecycle.
+   */
+  shipmentNextAction: string | null;
   createdAt: string;
   updatedAt: string;
   events: LoadEventView[];
@@ -473,6 +486,14 @@ export interface RateConfirmationView {
   equipmentType: EquipmentType;
   commodity: string | null;
   weightLbs: number | null;
+  /**
+   * How the commercial agreement behind this RC originated (Milestone 4
+   * Phase 6) — derived, read-only, from the awarded OfferRound's thread
+   * (`OfferThread.originType`); never stored on the RC snapshot itself and
+   * never mutates it. POSTED_RATE_BOOKING = "Booked at posted rate",
+   * CARRIER_OFFER = "Negotiated offer" (see OfferThreadOriginType).
+   */
+  agreementSource: OfferThreadOriginType;
   download: { url: string; expiresAt: string } | null;
   documentPending: boolean;
 }
