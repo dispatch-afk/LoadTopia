@@ -101,6 +101,16 @@ suite("freight audience strategy (M4 Phase 4, integration)", () => {
     );
   }
 
+  async function unpost(s: Session, loadId: string) {
+    return api.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/unpost` }));
+  }
+
+  async function editLoad(s: Session, loadId: string, payload: Record<string, unknown>) {
+    return api.inject(
+      authed(s.cookie, { method: "PATCH", url: `/api/loads/${loadId}`, payload }),
+    );
+  }
+
   async function requestConnection(from: Session, toCompanyId: string) {
     return api.inject(
       authed(from.cookie, { method: "POST", url: `/api/companies/${toCompanyId}/connections` }),
@@ -969,6 +979,257 @@ suite("freight audience strategy (M4 Phase 4, integration)", () => {
       // was never selected for THIS load — offer creation must still refuse.
       const res = await offer(outsider, loadId, "1000.00");
       expect(res.statusCode).toBe(404);
+    });
+  });
+
+  // ── REPOST (unpost -> edit -> post again) ─────────────────────────
+  //
+  // Phase 4 hotfix: a repost must never inherit mutable audience execution
+  // state (strategy record, member snapshot, pending/executed releases)
+  // from a PRIOR posting of the SAME load — see
+  // audience.service.ts#applyAudienceAtPosting.
+
+  describe("unpost -> edit -> repost", () => {
+    it("reposting with the SAME (Marketplace) strategy succeeds — no unique-constraint failure", async () => {
+      const s = await shipper();
+      const c = await carrier();
+      const loadId = await draftLoad(s);
+
+      expect((await postWith(s, loadId, { strategy: "MARKETPLACE" })).statusCode).toBe(200);
+      expect((await unpost(s, loadId)).statusCode).toBe(200);
+      expect((await editLoad(s, loadId, { commodity: "Repost test commodity" })).statusCode).toBe(200);
+
+      const repost = await postWith(s, loadId, { strategy: "MARKETPLACE" });
+      expect(repost.statusCode).toBe(200);
+      expect(repost.json().status).toBe("POSTED");
+      expect(repost.json().audience).toEqual(
+        expect.objectContaining({ strategy: "MARKETPLACE", currentStage: "MARKETPLACE" }),
+      );
+      expect(idsOf(await board(c))).toContain(loadId);
+
+      // Exactly one strategy row ever exists for this load at a time.
+      const strategies = await prisma.loadAudienceStrategyRecord.findMany({ where: { loadId } });
+      expect(strategies).toHaveLength(1);
+    });
+
+    it("reposting with the SAME (Selected Carriers First) strategy succeeds and re-establishes a fresh snapshot", async () => {
+      const s = await shipper();
+      const selected = await carrier("Reposted Selected Carrier");
+      await connected(s, selected);
+      const loadId = await draftLoad(s);
+
+      await postWith(s, loadId, {
+        strategy: "SELECTED_FIRST",
+        carrierCompanyIds: [selected.companyId],
+        carrierGroupIds: [],
+        releases: [],
+      });
+      expect((await unpost(s, loadId)).statusCode).toBe(200);
+      expect((await editLoad(s, loadId, { commodity: "Repost test commodity 2" })).statusCode).toBe(200);
+
+      const repost = await postWith(s, loadId, {
+        strategy: "SELECTED_FIRST",
+        carrierCompanyIds: [selected.companyId],
+        carrierGroupIds: [],
+        releases: [],
+      });
+      expect(repost.statusCode).toBe(200);
+      expect(repost.json().audience.currentStage).toBe("SELECTED");
+      expect(repost.json().audience.audienceCount).toBe(1);
+      expect(idsOf(await board(selected))).toContain(loadId);
+
+      const strategies = await prisma.loadAudienceStrategyRecord.findMany({ where: { loadId } });
+      expect(strategies).toHaveLength(1);
+    });
+
+    it("reposting with a DIFFERENT strategy makes the new strategy authoritative", async () => {
+      const s = await shipper();
+      const selected = await carrier("Selected Then Reposted Open");
+      const outsider = await carrier("Never Selected, Never Connected");
+      await connected(s, selected);
+      const loadId = await draftLoad(s);
+
+      await postWith(s, loadId, {
+        strategy: "SELECTED_FIRST",
+        carrierCompanyIds: [selected.companyId],
+        carrierGroupIds: [],
+        releases: [],
+      });
+      expect(idsOf(await board(outsider))).not.toContain(loadId);
+
+      expect((await unpost(s, loadId)).statusCode).toBe(200);
+      expect((await editLoad(s, loadId, { commodity: "Now going to Marketplace" })).statusCode).toBe(200);
+
+      const repost = await postWith(s, loadId, { strategy: "MARKETPLACE" });
+      expect(repost.statusCode).toBe(200);
+      expect(repost.json().audience).toEqual(
+        expect.objectContaining({ strategy: "MARKETPLACE", currentStage: "MARKETPLACE" }),
+      );
+
+      // A carrier who was never selected and never connected is now visible —
+      // proof the NEW strategy, not the old private one, is authoritative.
+      expect(idsOf(await board(outsider))).toContain(loadId);
+    });
+
+    it("a stale posting #1 selected-carrier snapshot never grants access under posting #2 — replaced, not merged", async () => {
+      const s = await shipper();
+      const a = await carrier("Selected Posting 1 - A");
+      const b = await carrier("Selected Posting 1 - B");
+      const cNew = await carrier("Selected Posting 2 - C");
+      await connected(s, a);
+      await connected(s, b);
+      await connected(s, cNew);
+      const loadId = await draftLoad(s);
+
+      await postWith(s, loadId, {
+        strategy: "SELECTED_FIRST",
+        carrierCompanyIds: [a.companyId, b.companyId],
+        carrierGroupIds: [],
+        releases: [],
+      });
+      expect(idsOf(await board(a))).toContain(loadId);
+      expect(idsOf(await board(b))).toContain(loadId);
+
+      expect((await unpost(s, loadId)).statusCode).toBe(200);
+      expect((await editLoad(s, loadId, { commodity: "Reselected audience" })).statusCode).toBe(200);
+
+      const repost = await postWith(s, loadId, {
+        strategy: "SELECTED_FIRST",
+        carrierCompanyIds: [cNew.companyId],
+        carrierGroupIds: [],
+        releases: [],
+      });
+      expect(repost.statusCode).toBe(200);
+      expect(repost.json().audience.audienceCount).toBe(1);
+
+      // A and B — selected under posting #1 — are NOT authorized under
+      // posting #2's fresh snapshot, even though they remain connected.
+      expect(idsOf(await board(a))).not.toContain(loadId);
+      expect(idsOf(await board(b))).not.toContain(loadId);
+      expect((await detail(a, loadId)).statusCode).toBe(404);
+      expect((await detail(b, loadId)).statusCode).toBe(404);
+      expect((await offer(a, loadId)).statusCode).toBe(404);
+
+      // C — selected under posting #2 — is authorized.
+      expect(idsOf(await board(cNew))).toContain(loadId);
+      expect((await detail(cNew, loadId)).statusCode).toBe(200);
+
+      // No stray SELECTED-stage member row survives for A/B under this load —
+      // the old strategy (and its snapshot) was replaced, not merely shadowed.
+      const staleMembers = await prisma.loadAudienceMember.findMany({
+        where: { loadId, carrierCompanyId: { in: [a.companyId, b.companyId] } },
+      });
+      expect(staleMembers).toHaveLength(0);
+
+      // No private identity leak in the new-audience carrier's own view.
+      const view = await detail(cNew, loadId);
+      expect(JSON.stringify(view.json())).not.toContain(a.companyId);
+      expect(JSON.stringify(view.json())).not.toContain(b.companyId);
+    });
+
+    it("a scheduled release from posting #1 can never execute against posting #2 (critical regression)", async () => {
+      const s = await shipper();
+      const selected = await carrier("Posting 1 Selected");
+      const outsider = await carrier("Would-be Early Release Beneficiary");
+      await connected(s, selected);
+      const loadId = await draftLoad(s);
+
+      const releaseAt = new Date(Date.now() + 60_000).toISOString();
+      const post1 = await postWith(s, loadId, {
+        strategy: "SELECTED_FIRST",
+        carrierCompanyIds: [selected.companyId],
+        carrierGroupIds: [],
+        releases: [{ toStage: "MARKETPLACE", releaseAt }],
+      });
+      expect(post1.statusCode).toBe(200);
+      const staleReleaseId = post1.json().audience.pendingReleases[0].id;
+
+      expect((await unpost(s, loadId)).statusCode).toBe(200);
+      expect((await editLoad(s, loadId, { commodity: "Repost, no auto release" })).statusCode).toBe(200);
+
+      // Posting #2: same private strategy, no scheduled widening this time.
+      const post2 = await postWith(s, loadId, {
+        strategy: "SELECTED_FIRST",
+        carrierCompanyIds: [selected.companyId],
+        carrierGroupIds: [],
+        releases: [],
+      });
+      expect(post2.statusCode).toBe(200);
+      expect(post2.json().audience.pendingReleases).toHaveLength(0);
+
+      // The row itself is gone — it can never be claimed, retried, or
+      // accidentally re-associated with posting #2's strategy.
+      const staleRow = await prisma.loadAudienceRelease.findUnique({ where: { id: staleReleaseId } });
+      expect(staleRow).toBeNull();
+
+      // Directly attempting to execute the stale release id (simulating a
+      // release-engine poll tick that queued it before the repost committed)
+      // safely no-ops rather than widening posting #2's audience.
+      const outcome = await executeOneRelease(prisma, staleReleaseId, new Date(Date.now() + 120_000));
+      expect(outcome).toBe("skipped");
+
+      // Posting #2 never widened — the outsider still has no access.
+      expect(idsOf(await board(outsider))).not.toContain(loadId);
+      const finalState = await api.inject(
+        authed(s.cookie, { method: "GET", url: `/api/loads/${loadId}` }),
+      );
+      expect(finalState.json().audience.currentStage).toBe("SELECTED");
+
+      // Posting #1's own scheduling fact remains in the immutable event log.
+      const events = await prisma.loadEvent.findMany({ where: { loadId }, orderBy: { createdAt: "asc" } });
+      expect(events.some((e) => e.type === "MARKETPLACE_RELEASE_SCHEDULED")).toBe(true);
+    });
+
+    it("a failed repost (empty resulting audience) rolls back cleanly — the prior posting's state is untouched", async () => {
+      const s = await shipper();
+      const selected = await carrier("Posting 1 Valid Selection");
+      const neverConnected = await carrier("Never Connected For Posting 2");
+      await connected(s, selected);
+      const loadId = await draftLoad(s);
+
+      await postWith(s, loadId, {
+        strategy: "SELECTED_FIRST",
+        carrierCompanyIds: [selected.companyId],
+        carrierGroupIds: [],
+        releases: [],
+      });
+      const strategyBefore = await prisma.loadAudienceStrategyRecord.findUniqueOrThrow({
+        where: { loadId },
+      });
+
+      expect((await unpost(s, loadId)).statusCode).toBe(200);
+      expect((await editLoad(s, loadId, { commodity: "Attempting invalid repost" })).statusCode).toBe(200);
+
+      // This repost attempt has zero eligible carriers — must be rejected,
+      // and must not partially apply (no delete-without-recreate).
+      const failedRepost = await postWith(s, loadId, {
+        strategy: "SELECTED_FIRST",
+        carrierCompanyIds: [neverConnected.companyId],
+        carrierGroupIds: [],
+        releases: [],
+      });
+      expect(failedRepost.statusCode).toBe(409);
+
+      const loadAfterFailure = await prisma.load.findUniqueOrThrow({ where: { id: loadId } });
+      expect(loadAfterFailure.status).toBe("DRAFT"); // never partially posted
+
+      // The PRIOR posting's strategy row survived the failed attempt intact
+      // — the delete-then-create for posting #2 never committed.
+      const strategyAfterFailure = await prisma.loadAudienceStrategyRecord.findUniqueOrThrow({
+        where: { loadId },
+      });
+      expect(strategyAfterFailure.id).toBe(strategyBefore.id);
+      expect(strategyAfterFailure.strategy).toBe("SELECTED_FIRST");
+
+      // A subsequent VALID repost still succeeds — no lingering corruption.
+      const validRepost = await postWith(s, loadId, {
+        strategy: "SELECTED_FIRST",
+        carrierCompanyIds: [selected.companyId],
+        carrierGroupIds: [],
+        releases: [],
+      });
+      expect(validRepost.statusCode).toBe(200);
+      expect(idsOf(await board(selected))).toContain(loadId);
     });
   });
 

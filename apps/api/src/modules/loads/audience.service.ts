@@ -125,6 +125,24 @@ export class AudienceService {
       );
     }
 
+    // A load can be posted more than once over its life (post -> unpost ->
+    // edit -> post again is an intentional, documented feature — see
+    // LoadsService#unpost). Each posting is a FRESH audience decision: any
+    // mutable execution state left over from a PRIOR posting — its strategy
+    // record, its frozen member snapshot(s), and any pending/executed
+    // release rows — must never leak into or block this one. The immutable
+    // history of that prior posting (LOAD_POSTED, RELEASE_SCHEDULED,
+    // RELEASE_CANCELLED, AUDIENCE_RELEASED LoadEvents) is untouched by this
+    // delete; it lives on forever as an append-only fact log. This delete
+    // cascades at the DB level (`load_audience_members`/`load_audience_releases`
+    // both FK to `load_audience_strategies` with `ON DELETE CASCADE`), and is
+    // a no-op for a load's first-ever posting. Old release rows are removed
+    // rather than marked CANCELLED because there is nothing further for them
+    // to do or say once superseded — the fact that they were scheduled is
+    // already permanently recorded in LoadEvents, and a stale row is a
+    // strictly worse hazard than no row.
+    await tx.loadAudienceStrategyRecord.deleteMany({ where: { loadId } });
+
     const strategy = await tx.loadAudienceStrategyRecord.create({
       data: {
         loadId,
