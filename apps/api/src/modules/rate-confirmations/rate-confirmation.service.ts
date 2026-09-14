@@ -137,7 +137,10 @@ export class RateConfirmationService implements RateConfirmationGenerator {
     if (!load) throw notFound("Load not found");
     assertCanReadLoad(actor, load);
 
-    let rc = await this.prisma.rateConfirmation.findUnique({ where: { loadId } });
+    let rc = await this.prisma.rateConfirmation.findUnique({
+      where: { loadId },
+      include: { awardedOfferRound: { select: { thread: { select: { originType: true } } } } },
+    });
     if (!rc) {
       throw new AppError(
         404,
@@ -145,15 +148,21 @@ export class RateConfirmationService implements RateConfirmationGenerator {
         "No rate confirmation exists for this load",
       );
     }
+    // Read-only fact about how the agreement originated (Milestone 4 Phase
+    // 6) — never stored on the RC row, never affects its immutability.
+    const agreementSource = rc.awardedOfferRound.thread.originType;
 
     let download = await this.tryDownload(rc.storageKey, rc.status);
     if (!download) {
       // Lazily complete (or reconcile) generation, then try once more.
       await this.generate(loadId);
-      rc = await this.prisma.rateConfirmation.findUniqueOrThrow({ where: { loadId } });
+      rc = await this.prisma.rateConfirmation.findUniqueOrThrow({
+        where: { loadId },
+        include: { awardedOfferRound: { select: { thread: { select: { originType: true } } } } },
+      });
       download = await this.tryDownload(rc.storageKey, rc.status);
     }
 
-    return toRateConfirmationView(rc, download);
+    return toRateConfirmationView(rc, download, agreementSource);
   }
 }

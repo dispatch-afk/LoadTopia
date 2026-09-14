@@ -1,5 +1,6 @@
 import {
   computeRatePerMile,
+  deriveShipmentPodState,
   EXPOSED_LOAD_STATUSES,
   isLoadOnMarket,
   type LoadViewerRole,
@@ -52,21 +53,27 @@ export const loadListInclude = {
 export const loadDetailInclude = {
   origin: true,
   destination: true,
+  // Milestone 4 Phase 6: the assigned carrier's operational view previously
+  // never surfaced who the shipper actually is — a real gap for a guided
+  // Shipment Detail. Cheap, same-query addition (no separate lookup).
+  shipperCompany: { select: { name: true } },
   carrierCompany: { select: { id: true, name: true } },
   awardedOfferRound: { select: { amount: true, currency: true } },
   offerThreads: { where: { status: "ACTIVE" }, select: { id: true } },
-  // Existence of an active, approved POD — drives `completionReady` and gates
-  // whether COMPLETED is advertised in `availableTransitions`. Indexed by
-  // (load_id, doc_type, review_status); bounded to one row.
+  // EVERY confirmed, non-removed POD (any review status) — drives both
+  // `completionReady`/whether COMPLETED is advertised AND the POD-aware
+  // `shipmentNextAction` (Milestone 4 Phase 6), via `deriveShipmentPodState`.
+  // Deliberately NOT `take: 1` — an already-APPROVED POD is permanent,
+  // non-removable evidence, but nothing prevents a further, unrelated POD
+  // being uploaded afterward (see deriveShipmentPodState's doc comment), so
+  // "the latest row" alone could hide an approval that already satisfies
+  // completion. A load carries very few POD rows in practice; this is a
+  // single batched relation query either way (no N+1, no new round trip).
+  // Indexed by (load_id, doc_type, review_status).
   documents: {
-    where: {
-      docType: "POD",
-      confirmedAt: { not: null },
-      reviewStatus: "APPROVED",
-      removedAt: null,
-    },
-    select: { id: true },
-    take: 1,
+    where: { docType: "POD", confirmedAt: { not: null }, removedAt: null },
+    select: { reviewStatus: true, confirmedAt: true, createdAt: true },
+    orderBy: { createdAt: "desc" },
   },
   events: {
     orderBy: { createdAt: "asc" },
@@ -175,9 +182,25 @@ function toAudienceView(l: LoadDetailRow): LoadAudienceView | null {
 }
 
 export function toLoadView(l: LoadDetailRow, viewerRole: LoadViewerRole): LoadView {
+  // The current POD state — deriveShipmentPodState already gives ANY active
+  // APPROVED POD precedence over a newer PENDING_REVIEW/REJECTED one, so
+  // this agrees with LoadsService#complete's own authoritative check (which
+  // matches ANY active APPROVED POD, unordered) by construction.
+  const podState = deriveShipmentPodState(
+    l.documents.map((d) => ({
+      docType: "POD",
+      reviewStatus: d.reviewStatus,
+      confirmedAt: d.confirmedAt,
+      removedAt: null,
+      createdAt: d.createdAt,
+    })),
+  );
   // Objective, actor-independent: this load is DELIVERED and has an active
-  // approved POD, so completion WOULD succeed for an authorized shipper.
-  const completionReady = l.status === LoadStatus.DELIVERED && l.documents.length > 0;
+  // APPROVED POD (podState === "APPROVED" iff one exists — see above), so
+  // completion WOULD succeed for an authorized shipper. Matches
+  // LoadsService#complete's own rule; that write-path check remains the
+  // sole authority — this is a read-model mirror of it, never a substitute.
+  const completionReady = l.status === LoadStatus.DELIVERED && podState === "APPROVED";
 
   // Actor-aware: only advertise transitions THIS viewer could actually trigger.
   // Endpoint enforcement is unchanged — this only removes misleading UI hints.
@@ -204,6 +227,7 @@ export function toLoadView(l: LoadDetailRow, viewerRole: LoadViewerRole): LoadVi
     referenceNumber: l.referenceNumber,
     status: l.status,
     shipperCompanyId: l.shipperCompanyId,
+    shipperName: l.shipperCompany.name,
     equipmentType: l.equipmentType,
     mode: l.mode,
     commodity: l.commodity,
@@ -256,6 +280,14 @@ export function toLoadView(l: LoadDetailRow, viewerRole: LoadViewerRole): LoadVi
     commercialMode: l.commercialMode,
     postedRate: moneyOrNull(l.postedRate),
     ratePerMile: computeRatePerMile(l.postedRate?.toFixed(2) ?? null, metersToMiles(l.distanceMeters)),
+    // Same deterministic source as ShipmentListItem.nextAction — see
+    // shipmentNextAction's doc comment. Only a shipper or carrier is ever
+    // "responsible" for a next action; admin/other get a truthful null
+    // rather than a guess at which side they'd stand in for.
+    shipmentNextAction:
+      viewerRole === "shipper" || viewerRole === "carrier"
+        ? shipmentNextAction(l.status, viewerRole, podState)
+        : null,
     createdAt: l.createdAt.toISOString(),
     updatedAt: l.updatedAt.toISOString(),
     events: l.events.map(toEventView),
@@ -269,11 +301,31 @@ export const shipmentListInclude = {
   destination: { select: { city: true, state: true } },
   shipperCompany: { select: { id: true, name: true } },
   carrierCompany: { select: { id: true, name: true } },
+  // EVERY confirmed, non-removed POD — same shape/reasoning as
+  // loadDetailInclude.documents (Milestone 4 Phase 6): lets the list's
+  // `nextAction` agree with the authoritative completion rule (any active
+  // APPROVED POD wins, regardless of anything uploaded after it — see
+  // deriveShipmentPodState). One batched query per page via Prisma's
+  // relation loading, never per-row (no N+1).
+  documents: {
+    where: { docType: "POD", confirmedAt: { not: null }, removedAt: null },
+    select: { reviewStatus: true, confirmedAt: true, createdAt: true },
+    orderBy: { createdAt: "desc" },
+  },
 } satisfies Prisma.LoadInclude;
 
 type ShipmentListRow = Prisma.LoadGetPayload<{ include: typeof shipmentListInclude }>;
 
 export function toShipmentListItem(l: ShipmentListRow, side: ShipmentViewerSide): ShipmentListItem {
+  const podState = deriveShipmentPodState(
+    l.documents.map((d) => ({
+      docType: "POD",
+      reviewStatus: d.reviewStatus,
+      confirmedAt: d.confirmedAt,
+      removedAt: null,
+      createdAt: d.createdAt,
+    })),
+  );
   return {
     id: l.id,
     referenceNumber: l.referenceNumber,
@@ -289,7 +341,7 @@ export function toShipmentListItem(l: ShipmentListRow, side: ShipmentViewerSide)
     carrierCompanyId: l.carrierCompany?.id ?? null,
     carrierName: l.carrierCompany?.name ?? null,
     bookedRate: moneyOrNull(l.bookedRate),
-    nextAction: shipmentNextAction(l.status, side),
+    nextAction: shipmentNextAction(l.status, side, podState),
     updatedAt: l.updatedAt.toISOString(),
   };
 }
