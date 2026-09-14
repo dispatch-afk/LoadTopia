@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from "@loadtopia/db";
 import {
   assertAwardable,
+  AWARDABLE_LOAD_STATUSES,
   assertCanRespond,
   assertPermission,
   assertThreadTransition,
@@ -16,9 +17,11 @@ import {
 } from "@loadtopia/domain";
 import {
   type AuthenticatedActor,
+  type BookAtPostedRateInput,
   type CloseThreadInput,
   type CounterOfferInput,
   type CreateOfferInput,
+  LoadCommercialMode,
   LoadStatus,
   type OfferThreadSummary,
   type OfferThreadView,
@@ -51,10 +54,17 @@ type OfferEventKind = "CREATED" | "COUNTERED" | "ACCEPTED" | "REJECTED" | "WITHD
  * lazy expiry. `OfferRound` rows are immutable (DB trigger + append-only); a
  * thread's `status` is the single source of truth for whether it is live.
  *
- * Concurrency: {@link accept} performs the ATOMIC LOAD AWARD — a `SELECT … FOR
- * UPDATE` row lock on the load, a re-check of every precondition inside the
- * transaction, and a compare-and-set load transition. Two carriers accepting
- * concurrently can never both win.
+ * Concurrency: {@link accept} and {@link bookAtPostedRate} both converge on
+ * ONE shared internal transaction core, {@link executeCommercialAcceptance}
+ * (Milestone 4 Phase 5) — a `SELECT … FOR UPDATE` row lock on the load, a
+ * re-check of every precondition inside the transaction, and a compare-and-set
+ * load transition through AWARDED and (same transaction) CARRIER_ASSIGNED.
+ * There is exactly ONE authoritative way for a Load to become commercially
+ * covered, regardless of whether the agreement came from negotiation or from
+ * booking a posted rate — award validation, release cancellation, competitor
+ * rejection, Rate Confirmation snapshotting, and automatic assignment are
+ * never duplicated across the two call sites. Two carriers — negotiating,
+ * booking, or one of each — can never both win.
  */
 export class OffersService {
   /**
@@ -433,6 +443,151 @@ export class OffersService {
     return this.threadViewById(thread.id, viewer);
   }
 
+  // ── shared commercial-acceptance core ────────────────────────────────
+
+  /**
+   * THE single authoritative transaction body for "this Load has just become
+   * commercially covered" (Milestone 4 Phase 5, §11-12) — called from inside
+   * {@link accept}'s transaction for a negotiated acceptance, and from inside
+   * {@link bookAtPostedRate}'s transaction for a posted-rate booking. Both
+   * callers have ALREADY, under the same row lock: re-validated awardability,
+   * re-validated carrier eligibility, and (for booking) re-validated audience
+   * authorization + that the confirmed rate still matches. This function only
+   * performs the award/assignment/agreement writes themselves — it never
+   * re-derives eligibility, so it must never be called without those
+   * preconditions freshly re-checked in the SAME transaction, under the SAME
+   * lock, immediately beforehand.
+   *
+   * In order, inside `tx`:
+   *   1. POSTED/OFFER_RECEIVED -> AWARDED (compare-and-set; sets
+   *      carrierCompanyId/bookedRate/currency/awardedOfferRoundId/awardedAt
+   *      in the SAME update, exactly as before Phase 5).
+   *   2. AWARDED -> CARRIER_ASSIGNED, in the SAME transaction — a SEPARATE
+   *      compare-and-set writing its own distinct immutable LoadEvent, so
+   *      award and assignment remain two truthful facts even though a new
+   *      Phase-5 Load never rests at AWARDED in between (§14). Legal per the
+   *      existing load state machine (AWARDED -> CARRIER_ASSIGNED); safe
+   *      unconditionally here because no other transaction can observe or
+   *      mutate this row between steps 1 and 2 — this transaction still
+   *      holds the row lock taken by the caller.
+   *   3. Cancel any pending Phase 4 audience releases (§18) — inherited
+   *      identically by both callers precisely BECAUSE this is one shared
+   *      function, not two copies that could drift.
+   *   4. Winning thread -> ACCEPTED + immutable offer event.
+   *   5. Every other ACTIVE thread on the load -> REJECTED
+   *      ("load_awarded_to_other") + immutable offer events — unchanged,
+   *      already origin-agnostic (works identically for a booked winner).
+   *   6. Insert the immutable Rate Confirmation commercial snapshot — works
+   *      identically for a negotiated or a synthesized winning round; no
+   *      RC schema change was needed for booking (§16).
+   */
+  private async executeCommercialAcceptance(
+    tx: Tx,
+    p: {
+      loadId: string;
+      fromStatus: LoadStatus;
+      threadId: string;
+      carrierCompanyId: string;
+      winningRoundId: string;
+      winningAmount: Prisma.Decimal;
+      winningCurrency: string;
+      actorUserId: string;
+      actorCompanyId: string | null;
+      now: Date;
+      awardNote: string;
+      awardData: Record<string, unknown>;
+      acceptedByParty: ViewerParty;
+    },
+  ): Promise<void> {
+    await atomicLoadTransition(tx, {
+      id: p.loadId,
+      from: p.fromStatus,
+      to: LoadStatus.AWARDED,
+      actorUserId: p.actorUserId,
+      actorCompanyId: p.actorCompanyId,
+      extra: {
+        carrierCompanyId: p.carrierCompanyId,
+        bookedRate: p.winningAmount,
+        currency: p.winningCurrency,
+        awardedOfferRoundId: p.winningRoundId,
+        awardedAt: p.now,
+      },
+      note: p.awardNote,
+      data: p.awardData,
+    });
+
+    // Automatic company-level assignment, same transaction, distinct event
+    // (Milestone 4 Phase 5 §14) — the ordinary shipper "Assign Carrier" step
+    // no longer applies to any load awarded from here forward; see
+    // loads.service.ts#assign's doc comment for the narrow legacy path that
+    // endpoint remains for.
+    await atomicLoadTransition(tx, {
+      id: p.loadId,
+      from: LoadStatus.AWARDED,
+      to: LoadStatus.CARRIER_ASSIGNED,
+      actorUserId: p.actorUserId,
+      actorCompanyId: p.actorCompanyId,
+      extra: { assignedAt: p.now },
+      note: "carrier automatically assigned at commercial acceptance",
+      data: { carrierCompanyId: p.carrierCompanyId },
+    });
+
+    // A covered (awarded) load must never widen its audience afterward —
+    // cancel any pending scheduled release in this SAME transaction (§18).
+    await cancelPendingReleases(tx, p.loadId, "load_covered", p.actorUserId, p.actorCompanyId);
+
+    // Winning thread → ACCEPTED (DB partial unique guarantees ≤ 1 per load).
+    await tx.offerThread.update({
+      where: { id: p.threadId },
+      data: { status: "ACCEPTED", closedReason: "offer accepted", closedAt: p.now },
+    });
+    await this.appendOfferEvent(tx, {
+      threadId: p.threadId,
+      roundId: p.winningRoundId,
+      type: "ACCEPTED",
+      actorUserId: p.actorUserId,
+      actorCompanyId: p.actorCompanyId,
+      data: { amount: p.winningAmount.toFixed(2), acceptedByParty: p.acceptedByParty },
+    });
+
+    // Every other ACTIVE thread on the load loses.
+    const losers = await tx.offerThread.findMany({
+      where: { loadId: p.loadId, status: "ACTIVE", id: { not: p.threadId } },
+      select: { id: true, currentRoundId: true },
+    });
+    if (losers.length > 0) {
+      await tx.offerThread.updateMany({
+        where: { loadId: p.loadId, status: "ACTIVE", id: { not: p.threadId } },
+        data: { status: "REJECTED", closedReason: "load_awarded_to_other", closedAt: p.now },
+      });
+      for (const loser of losers) {
+        await this.appendOfferEvent(tx, {
+          threadId: loser.id,
+          roundId: loser.currentRoundId,
+          type: "REJECTED",
+          actorUserId: null,
+          actorCompanyId: null,
+          data: { reason: "load_awarded_to_other" },
+        });
+      }
+    }
+
+    // Phase 1 of the Rate Confirmation: the immutable commercial snapshot,
+    // INSIDE this same transaction. Coupled to the award on purpose — if it
+    // cannot be written, the whole transaction rolls back, so "exactly one
+    // snapshot per awarded load" is transactional. `now` is the SAME
+    // timestamp already used for Load.awardedAt / OfferThread.closedAt
+    // above. No storage here.
+    await insertRateConfirmationSnapshot(tx, {
+      loadId: p.loadId,
+      carrierCompanyId: p.carrierCompanyId,
+      awardedOfferRoundId: p.winningRoundId,
+      agreedRate: p.winningAmount,
+      currency: p.winningCurrency,
+      awardedAt: p.now,
+    });
+  }
+
   // ── accept → ATOMIC LOAD AWARD ──────────────────────────────────────
 
   async accept(actor: AuthenticatedActor, roundId: string): Promise<OfferThreadView> {
@@ -518,84 +673,28 @@ export class OffersService {
 
       const winningRound = t.currentRound!;
 
-      // Atomic load award: compare-and-set POSTED|OFFER_RECEIVED → AWARDED. Under
-      // concurrency exactly one transaction's updateMany matches; the other rolls
-      // back (assertAwardable already rejected it above once this one committed).
-      await atomicLoadTransition(tx, {
-        id: loadId,
-        from: t.load.status as LoadStatus,
-        to: LoadStatus.AWARDED,
+      // Converge on the ONE shared commercial-acceptance core (§11) — award,
+      // automatic assignment, release cancellation, competitor rejection, and
+      // RC snapshotting are never duplicated between negotiated acceptance
+      // and Book at Posted Rate.
+      await this.executeCommercialAcceptance(tx, {
+        loadId,
+        fromStatus: t.load.status as LoadStatus,
+        threadId: t.id,
+        carrierCompanyId: t.carrierCompanyId,
+        winningRoundId: winningRound.id,
+        winningAmount: winningRound.amount,
+        winningCurrency: winningRound.currency,
         actorUserId: actor.userId,
         actorCompanyId: actor.companyId,
-        extra: {
-          carrierCompanyId: t.carrierCompanyId,
-          bookedRate: winningRound.amount,
-          currency: winningRound.currency,
-          awardedOfferRoundId: winningRound.id,
-          awardedAt: now,
-        },
-        note: "load awarded via marketplace offer",
-        data: {
+        now,
+        awardNote: "load awarded via marketplace offer",
+        awardData: {
           threadId: t.id,
           offerRoundId: winningRound.id,
           amount: winningRound.amount.toFixed(2),
         },
-      });
-
-      // A covered (awarded) load must never widen its audience afterward —
-      // cancel any pending scheduled release in this SAME award transaction
-      // (§6-7). This is the one, smallest necessary integration point into
-      // the existing award path Phase 4 is allowed to touch.
-      await cancelPendingReleases(tx, loadId, "load_covered", actor.userId, actor.companyId);
-
-      // Winning thread → ACCEPTED (DB partial unique guarantees ≤ 1 per load).
-      await tx.offerThread.update({
-        where: { id: t.id },
-        data: { status: "ACCEPTED", closedReason: "offer accepted", closedAt: now },
-      });
-      await this.appendOfferEvent(tx, {
-        threadId: t.id,
-        roundId: winningRound.id,
-        type: "ACCEPTED",
-        actorUserId: actor.userId,
-        actorCompanyId: actor.companyId,
-        data: { amount: winningRound.amount.toFixed(2), acceptedByParty: viewer },
-      });
-
-      // Every other ACTIVE thread on the load loses.
-      const losers = await tx.offerThread.findMany({
-        where: { loadId, status: "ACTIVE", id: { not: t.id } },
-        select: { id: true, currentRoundId: true },
-      });
-      if (losers.length > 0) {
-        await tx.offerThread.updateMany({
-          where: { loadId, status: "ACTIVE", id: { not: t.id } },
-          data: { status: "REJECTED", closedReason: "load_awarded_to_other", closedAt: now },
-        });
-        for (const loser of losers) {
-          await this.appendOfferEvent(tx, {
-            threadId: loser.id,
-            roundId: loser.currentRoundId,
-            type: "REJECTED",
-            actorUserId: null,
-            actorCompanyId: null,
-            data: { reason: "load_awarded_to_other" },
-          });
-        }
-      }
-
-      // Phase 1 of the Rate Confirmation: the immutable commercial snapshot,
-      // INSIDE this same award transaction. Coupled to the award on purpose —
-      // if it cannot be written, the award rolls back, so "exactly one snapshot
-      // per awarded load" is transactional. `now` is the SAME timestamp already
-      // used for Load.awardedAt / OfferThread.closedAt above. No storage here.
-      await insertRateConfirmationSnapshot(tx, {
-        loadId,
-        carrierCompanyId: t.carrierCompanyId,
-        awardedOfferRoundId: winningRound.id,
-        agreedRate: winningRound.amount,
-        currency: winningRound.currency,
-        awardedAt: now,
+        acceptedByParty: viewer,
       });
     });
 
@@ -617,6 +716,260 @@ export class OffersService {
     }
 
     return this.threadViewById(thread.id, viewer);
+  }
+
+  // ── carrier: Book at Posted Rate → ATOMIC LOAD AWARD ────────────────
+
+  /**
+   * Binding commercial acceptance of a shipper's published rate (Milestone 4
+   * Phase 5, §9-10). Synthesizes the truthful winning `OfferThread` +
+   * `OfferRound` this agreement represents — round 1 is proposed BY THE
+   * SHIPPER (the load's own creator, on the load's own posted terms), never
+   * by the booking carrier, so this is never "a carrier proposes, then
+   * accepts its own proposal": it is a carrier accepting an offer the
+   * shipper already made by publishing the rate. That thread then converges
+   * on the exact same {@link executeCommercialAcceptance} core `accept()`
+   * uses — no separate booking/award engine exists.
+   *
+   * "What the user saw is not authority — the transaction is": every
+   * precondition (load still awardable, still PUBLISH_RATE, the posted rate
+   * still equal to `input.confirmedRate`, the carrier still audience-
+   * authorized and eligible) is re-read and re-checked fresh, under the
+   * load's row lock, never trusted from the pre-transaction read that served
+   * the confirmation dialog.
+   */
+  async bookAtPostedRate(
+    actor: AuthenticatedActor,
+    loadId: string,
+    input: BookAtPostedRateInput,
+  ): Promise<OfferThreadView> {
+    assertPermission(actor, Permission.OFFER_CREATE);
+    const carrierCompanyId = actor.companyId;
+    if (!carrierCompanyId) throw forbidden();
+
+    // Idempotency FIRST, before any load-status-dependent check: a load this
+    // carrier already won is, correctly, no longer marketplace-visible and no
+    // longer "eligible" (isCarrierEligibleForLoad excludes AWARDED/
+    // CARRIER_ASSIGNED) — a retried double-click must resolve to the SAME
+    // accepted outcome, not a misleading "not found"/"not eligible" error.
+    const existingThread = await this.prisma.offerThread.findUnique({
+      where: { loadId_carrierCompanyId: { loadId, carrierCompanyId } },
+    });
+    if (existingThread) {
+      if (existingThread.status === "ACCEPTED") {
+        return this.threadViewById(existingThread.id, "CARRIER");
+      }
+      throw conflict(
+        "You already have a negotiation on this load — accept, counter, or withdraw it first",
+      );
+    }
+
+    const load = await this.prisma.load.findUnique({
+      where: { id: loadId },
+      select: {
+        status: true,
+        equipmentType: true,
+        shipperCompanyId: true,
+        createdByUserId: true,
+        commercialMode: true,
+        postedRate: true,
+        origin: { select: { state: true } },
+      },
+    });
+    // IDOR-safe: same rule as createOffer — a DRAFT / private / cancelled /
+    // awarded load is simply "not found" to a carrier.
+    if (!load || !MARKETPLACE_VISIBLE_STATUSES.includes(load.status)) {
+      throw notFound("Load not found");
+    }
+    // Freight audience strategy (Milestone 4 Phase 4): never trust prior page
+    // access — re-check CURRENT audience membership independently (§24).
+    if (
+      !(await isLoadVisibleToCarrier(this.prisma, carrierCompanyId, {
+        id: loadId,
+        shipperCompanyId: load.shipperCompanyId,
+      }))
+    ) {
+      throw notFound("Load not found");
+    }
+
+    const carrierCtx = await loadCarrierEligibilityContext(this.prisma, carrierCompanyId);
+    const access = carrierMarketplaceAccess(carrierCtx, actor.role);
+    if (!access.eligible) {
+      throw new AppError(
+        403,
+        "CARRIER_NOT_ELIGIBLE",
+        "Your company is not eligible to use the marketplace",
+        { reasons: access.reasons },
+      );
+    }
+    const elig = isCarrierEligibleForLoad(carrierCtx, {
+      status: load.status,
+      equipmentType: load.equipmentType,
+      originState: load.origin.state,
+    });
+    if (!elig.eligible) {
+      throw new AppError(403, "NOT_ELIGIBLE_FOR_LOAD", "You are not eligible to book this load", {
+        reasons: elig.reasons,
+      });
+    }
+
+    if (load.commercialMode !== LoadCommercialMode.PUBLISH_RATE || load.postedRate == null) {
+      throw new AppError(
+        409,
+        "COMMERCIAL_TERMS_CHANGED",
+        "This load is no longer offering a posted rate to book. Refresh to see its current terms.",
+      );
+    }
+    if (!load.postedRate.equals(toDecimal(input.confirmedRate))) {
+      throw new AppError(
+        409,
+        "COMMERCIAL_TERMS_CHANGED",
+        "The posted rate has changed since you last viewed this load. Refresh and try again.",
+      );
+    }
+
+    const now = new Date();
+    let threadId: string;
+    try {
+      threadId = await this.prisma.$transaction(async (tx) => {
+        await this.lockLoad(tx, loadId);
+
+        // Re-read EVERYTHING authoritative, under the lock. The pre-transaction
+        // reads above only decided whether it was worth opening a transaction
+        // at all — none of them are trusted here.
+        const fresh = await tx.load.findUniqueOrThrow({
+          where: { id: loadId },
+          select: {
+            status: true,
+            equipmentType: true,
+            commercialMode: true,
+            postedRate: true,
+            origin: { select: { state: true } },
+          },
+        });
+        if (!AWARDABLE_LOAD_STATUSES.includes(fresh.status as LoadStatus)) {
+          throw conflict("This load is no longer on the marketplace");
+        }
+        if (fresh.commercialMode !== LoadCommercialMode.PUBLISH_RATE || fresh.postedRate == null) {
+          throw new AppError(
+            409,
+            "COMMERCIAL_TERMS_CHANGED",
+            "This load is no longer offering a posted rate to book.",
+          );
+        }
+        if (!fresh.postedRate.equals(toDecimal(input.confirmedRate))) {
+          throw new AppError(
+            409,
+            "COMMERCIAL_TERMS_CHANGED",
+            "The posted rate has changed since you last viewed this load. Refresh and try again.",
+          );
+        }
+        if (
+          !(await isLoadVisibleToCarrier(tx, carrierCompanyId, {
+            id: loadId,
+            shipperCompanyId: load.shipperCompanyId,
+          }))
+        ) {
+          throw notFound("Load not found");
+        }
+        const carrierCtxNow = await loadCarrierEligibilityContext(this.prisma, carrierCompanyId);
+        const eligNow = isCarrierEligibleForLoad(carrierCtxNow, {
+          status: fresh.status,
+          equipmentType: fresh.equipmentType,
+          originState: fresh.origin.state,
+        });
+        if (!eligNow.eligible) {
+          throw new AppError(403, "CARRIER_NOT_ELIGIBLE", "You are no longer eligible for this load", {
+            reasons: eligNow.reasons,
+          });
+        }
+
+        // The truthful winning thread: round 1 proposed BY THE SHIPPER, at
+        // the shipper's own published rate — never fabricated negotiation.
+        const thread = await tx.offerThread.create({
+          data: {
+            loadId,
+            carrierCompanyId,
+            status: "ACTIVE",
+            roundCount: 1,
+            originType: "POSTED_RATE_BOOKING",
+          },
+        });
+        const round = await tx.offerRound.create({
+          data: {
+            threadId: thread.id,
+            roundNumber: 1,
+            proposedByCompanyId: load.shipperCompanyId,
+            proposedByUserId: load.createdByUserId,
+            amount: fresh.postedRate,
+            currency: "USD",
+            message: null,
+            // Immediately accepted below — never negotiated — so this deadline
+            // is inert. Set safely in the future purely so the round never
+            // displays as "expired" once won.
+            expiresAt: computeExpiry(now, 24),
+          },
+        });
+        await tx.offerThread.update({
+          where: { id: thread.id },
+          data: { currentRoundId: round.id },
+        });
+        await this.appendOfferEvent(tx, {
+          threadId: thread.id,
+          roundId: round.id,
+          type: "CREATED",
+          actorUserId: null,
+          actorCompanyId: load.shipperCompanyId,
+          data: { amount: round.amount.toFixed(2), currency: round.currency, origin: "POSTED_RATE_BOOKING" },
+        });
+
+        // Converge on the ONE shared commercial-acceptance core (§11) — the
+        // exact same award/assignment/release-cancellation/RC path accept()
+        // uses. This is what makes booking's history truthful: "carrier
+        // accepted the shipper's posted rate," not a separate booking engine.
+        await this.executeCommercialAcceptance(tx, {
+          loadId,
+          fromStatus: fresh.status as LoadStatus,
+          threadId: thread.id,
+          carrierCompanyId,
+          winningRoundId: round.id,
+          winningAmount: round.amount,
+          winningCurrency: round.currency,
+          actorUserId: actor.userId,
+          actorCompanyId: actor.companyId,
+          now,
+          awardNote: "load awarded via booking at posted rate",
+          awardData: {
+            threadId: thread.id,
+            offerRoundId: round.id,
+            amount: round.amount.toFixed(2),
+            origin: "POSTED_RATE_BOOKING",
+          },
+          acceptedByParty: "CARRIER",
+        });
+
+        return thread.id;
+      });
+    } catch (err) {
+      if ((err as { code?: string }).code === "P2002") {
+        // Lost a race to create the first thread on this load for this
+        // carrier — the same DB backstop createOffer relies on.
+        throw conflict("You already have an offer on this load");
+      }
+      throw err;
+    }
+
+    // Phase 2 of the Rate Confirmation: render + store the PDF AFTER COMMIT —
+    // identical best-effort post-commit path to accept().
+    if (this.rateConfirmations) {
+      try {
+        await this.rateConfirmations.generateAfterAward(loadId);
+      } catch {
+        /* committed award is unaffected */
+      }
+    }
+
+    return this.threadViewById(threadId, "CARRIER");
   }
 
   // ── reject (shipper) / withdraw (carrier) ───────────────────────────

@@ -4,6 +4,7 @@ import {
   createLoadSchema,
   listLoadsSchema,
   LoadAudienceStrategyType,
+  paginationSchema,
   postLoadAudienceSchema,
   releaseNowSchema,
   rescheduleReleaseSchema,
@@ -44,6 +45,15 @@ export async function loadsRoutes(app: FastifyInstance): Promise<void> {
     const actor = request.currentUser!;
     const q = listLoadsSchema.parse(request.query);
     return service.list(actor, actor.companyId!, q);
+  });
+
+  // Shipper "Shipments" workspace (Milestone 4 Phase 5) — a static route, so
+  // it is matched ahead of the parametric `/loads/:id` below regardless of
+  // registration order.
+  app.get("/loads/shipments", { preHandler: [app.requireActiveCompany] }, async (request) => {
+    const actor = request.currentUser!;
+    const q = paginationSchema.parse(request.query);
+    return service.listShipments(actor, actor.companyId!, q);
   });
 
   app.get("/loads/:id", { preHandler: [app.requireActiveCompany] }, async (request) => {

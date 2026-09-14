@@ -1,8 +1,11 @@
 import {
+  computeRatePerMile,
   EXPOSED_LOAD_STATUSES,
   isLoadOnMarket,
   type LoadViewerRole,
   nextLoadStatuses,
+  shipmentNextAction,
+  type ShipmentViewerSide,
 } from "@loadtopia/domain";
 import {
   type LoadAudienceView,
@@ -11,10 +14,11 @@ import {
   LoadReleaseStatus,
   LoadStatus,
   type LoadView,
+  type ShipmentListItem,
 } from "@loadtopia/shared";
 import type { Prisma } from "@loadtopia/db";
 import { MOCK_PROVIDER_NAME } from "@loadtopia/providers";
-import { money } from "../../lib/money";
+import { money, moneyOrNull } from "../../lib/money";
 import { toLocationView } from "../locations/locations.service";
 
 const METERS_PER_MILE = 1609.344;
@@ -249,8 +253,43 @@ export function toLoadView(l: LoadDetailRow, viewerRole: LoadViewerRole): LoadVi
           : null,
     },
     audience: toAudienceView(l),
+    commercialMode: l.commercialMode,
+    postedRate: moneyOrNull(l.postedRate),
+    ratePerMile: computeRatePerMile(l.postedRate?.toFixed(2) ?? null, metersToMiles(l.distanceMeters)),
     createdAt: l.createdAt.toISOString(),
     updatedAt: l.updatedAt.toISOString(),
     events: l.events.map(toEventView),
+  };
+}
+
+// --- Shipments workspaces (Milestone 4 Phase 5) -----------------------------
+
+export const shipmentListInclude = {
+  origin: { select: { city: true, state: true } },
+  destination: { select: { city: true, state: true } },
+  shipperCompany: { select: { id: true, name: true } },
+  carrierCompany: { select: { id: true, name: true } },
+} satisfies Prisma.LoadInclude;
+
+type ShipmentListRow = Prisma.LoadGetPayload<{ include: typeof shipmentListInclude }>;
+
+export function toShipmentListItem(l: ShipmentListRow, side: ShipmentViewerSide): ShipmentListItem {
+  return {
+    id: l.id,
+    referenceNumber: l.referenceNumber,
+    status: l.status,
+    origin: { city: l.origin.city, state: l.origin.state },
+    destination: { city: l.destination.city, state: l.destination.state },
+    pickupWindowStart: l.pickupWindowStart?.toISOString() ?? null,
+    pickupWindowEnd: l.pickupWindowEnd?.toISOString() ?? null,
+    deliveryWindowStart: l.deliveryWindowStart?.toISOString() ?? null,
+    deliveryWindowEnd: l.deliveryWindowEnd?.toISOString() ?? null,
+    shipperCompanyId: l.shipperCompany.id,
+    shipperName: l.shipperCompany.name,
+    carrierCompanyId: l.carrierCompany?.id ?? null,
+    carrierName: l.carrierCompany?.name ?? null,
+    bookedRate: moneyOrNull(l.bookedRate),
+    nextAction: shipmentNextAction(l.status, side),
+    updatedAt: l.updatedAt.toISOString(),
   };
 }

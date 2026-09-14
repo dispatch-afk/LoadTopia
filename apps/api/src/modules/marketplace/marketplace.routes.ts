@@ -1,4 +1,10 @@
-import { createOfferSchema, marketplaceSearchSchema, uuidSchema } from "@loadtopia/shared";
+import {
+  bookAtPostedRateSchema,
+  createOfferSchema,
+  marketplaceSearchSchema,
+  paginationSchema,
+  uuidSchema,
+} from "@loadtopia/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { writeAudit } from "../../lib/audit";
@@ -15,6 +21,8 @@ const idParam = z.object({ id: uuidSchema });
  *   GET  /marketplace/loads/:id          one load's marketplace detail
  *   POST /marketplace/loads/:id/offers   submit an offer (carrier)
  *   GET  /marketplace/loads/:id/offers   this carrier's own negotiation, if any
+ *   POST /marketplace/loads/:id/book     Book at Posted Rate (Milestone 4 Phase 5)
+ *   GET  /marketplace/shipments          carrier "My Shipments" (Milestone 4 Phase 5)
  */
 export async function marketplaceRoutes(app: FastifyInstance): Promise<void> {
   const service = new MarketplaceService(app.prisma);
@@ -23,6 +31,14 @@ export async function marketplaceRoutes(app: FastifyInstance): Promise<void> {
     rateLimit: {
       max: app.env.MARKETPLACE_WRITE_RATE_LIMIT_MAX,
       timeWindow: app.env.MARKETPLACE_WRITE_RATE_LIMIT_WINDOW,
+    },
+  };
+  // Book at Posted Rate is an award-producing action, same as
+  // /offers/rounds/:roundId/accept — same tighter limit applies.
+  const awardLimit = {
+    rateLimit: {
+      max: app.env.MARKETPLACE_AWARD_RATE_LIMIT_MAX,
+      timeWindow: app.env.MARKETPLACE_AWARD_RATE_LIMIT_WINDOW,
     },
   };
 
@@ -79,6 +95,37 @@ export async function marketplaceRoutes(app: FastifyInstance): Promise<void> {
       const actor = request.currentUser!;
       const { id } = idParam.parse(request.params);
       return { thread: await service.myThreadForLoad(actor, id) };
+    },
+  );
+
+  // ── Book at Posted Rate (Milestone 4 Phase 5) ─────────────────────────
+  app.post(
+    "/marketplace/loads/:id/book",
+    { config: awardLimit, preHandler: [app.requireCompanyPermission("offer:create")] },
+    async (request) => {
+      const actor = request.currentUser!;
+      const { id } = idParam.parse(request.params);
+      const input = bookAtPostedRateSchema.parse(request.body);
+      const thread = await service.bookAtPostedRate(actor, id, input);
+      await writeAudit(app.prisma, request, {
+        actorUserId: actor.userId,
+        action: "offer.book_at_posted_rate",
+        entityType: "offer_thread",
+        entityId: thread.threadId,
+        data: { loadId: id, amount: thread.currentAmount, currency: thread.currentCurrency },
+      });
+      return thread;
+    },
+  );
+
+  // ── carrier: My Shipments (Milestone 4 Phase 5) ───────────────────────
+  app.get(
+    "/marketplace/shipments",
+    { preHandler: [app.requireCompanyPermission("marketplace:browse")] },
+    async (request) => {
+      const actor = request.currentUser!;
+      const q = paginationSchema.parse(request.query);
+      return service.listMyShipments(actor, q);
     },
   );
 }

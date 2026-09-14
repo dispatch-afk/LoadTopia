@@ -7,12 +7,14 @@ import {
   assertPermission,
   assertPostReadiness,
   assertLoadWindows,
+  assertValidCommercialMode,
   buildLoadCreatedEvent,
   buildLoadUpdatedEvent,
   canCancelLoad,
   formatLoadNumber,
   loadViewerRole,
   Permission,
+  SHIPMENT_LOAD_STATUSES,
   type LoadEventDraft,
 } from "@loadtopia/domain";
 import { MOCK_PROVIDER_NAME, type ProviderRegistry } from "@loadtopia/providers";
@@ -23,18 +25,28 @@ import {
   type ListLoadsQuery,
   LoadStatus,
   type LoadListItem,
+  type Pagination,
   type PostLoadAudienceInput,
   type LoadView,
   type Paginated,
+  type ShipmentListItem,
   type UpdateLoadInput,
 } from "@loadtopia/shared";
 import { AppError, badRequest, conflict, notFound } from "../../lib/errors";
 import { appendLoadEvent, atomicLoadTransition } from "../../lib/load-lifecycle";
 import { paginate, toSkipTake } from "../../lib/pagination";
+import { toDecimal } from "../../lib/money";
 import { PricingService } from "../pricing/pricing.service";
 import { AudienceService } from "./audience.service";
 import { cancelPendingReleases } from "./release-engine";
-import { loadDetailInclude, loadListInclude, toLoadListItem, toLoadView } from "./loads.serializer";
+import {
+  loadDetailInclude,
+  loadListInclude,
+  shipmentListInclude,
+  toLoadListItem,
+  toLoadView,
+  toShipmentListItem,
+} from "./loads.serializer";
 import { computeRouting } from "./routing";
 
 const parseDate = (v: string | null | undefined): Date | null => (v == null ? null : new Date(v));
@@ -77,6 +89,13 @@ export class LoadsService {
       pickupWindowEnd: input.pickupWindowEnd,
       deliveryWindowStart: input.deliveryWindowStart,
       deliveryWindowEnd: input.deliveryWindowEnd,
+    });
+    // Commercial agreement (Milestone 4 Phase 5): USD-only is enforced by the
+    // schema (positiveMoneySchema/currencySchema never accept anything else);
+    // this is the cross-field rule the schema alone cannot express.
+    assertValidCommercialMode({
+      commercialMode: input.commercialMode,
+      postedRate: input.postedRate ?? null,
     });
 
     const locations = await this.requireOwnedLocations(companyId, [
@@ -125,6 +144,8 @@ export class LoadsService {
           driveTimeMinutes: routing?.driveTimeMinutes ?? null,
           routingProvider: routing?.provider ?? null,
           routedAt: routing?.routedAt ?? null,
+          commercialMode: input.commercialMode,
+          postedRate: input.postedRate != null ? toDecimal(input.postedRate) : null,
         },
       });
 
@@ -164,6 +185,44 @@ export class LoadsService {
       this.prisma.load.count({ where }),
     ]);
     return paginate(rows.map(toLoadListItem), total, q);
+  }
+
+  /**
+   * Shipper "Shipments" workspace (Milestone 4 Phase 5, §21-22) — the SAME
+   * Load rows as {@link list}, filtered to the shipment lifecycle
+   * (SHIPMENT_LOAD_STATUSES: AWARDED through COMPLETED) plus a load that was
+   * cancelled AFTER being awarded (it was, briefly or otherwise, a real
+   * shipment — its cancellation is still shipment history, not pre-coverage
+   * history). No new table, no new query shape beyond the existing
+   * `[shipperCompanyId, status]` index already used by {@link list}.
+   */
+  async listShipments(
+    actor: AuthenticatedActor,
+    companyId: string,
+    q: Pagination,
+  ): Promise<Paginated<ShipmentListItem>> {
+    assertPermission(actor, Permission.LOAD_READ_OWN);
+    const where: Prisma.LoadWhereInput = {
+      shipperCompanyId: companyId,
+      OR: [
+        { status: { in: [...SHIPMENT_LOAD_STATUSES] } },
+        { status: LoadStatus.CANCELLED, carrierCompanyId: { not: null } },
+      ],
+    };
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.load.findMany({
+        where,
+        include: shipmentListInclude,
+        orderBy: { updatedAt: "desc" },
+        ...toSkipTake(q),
+      }),
+      this.prisma.load.count({ where }),
+    ]);
+    return paginate(
+      rows.map((r) => toShipmentListItem(r, "shipper")),
+      total,
+      q,
+    );
   }
 
   async getById(actor: AuthenticatedActor, id: string): Promise<LoadView> {
@@ -207,12 +266,26 @@ export class LoadsService {
         input.deliveryWindowEnd === undefined
           ? load.deliveryWindowEnd
           : parseDate(input.deliveryWindowEnd),
+      commercialMode: input.commercialMode ?? load.commercialMode,
+      postedRate:
+        input.postedRate === undefined
+          ? load.postedRate
+          : input.postedRate === null
+            ? null
+            : toDecimal(input.postedRate),
     };
 
     if (merged.originLocationId === merged.destinationLocationId) {
       throw badRequest("origin and destination must be different");
     }
     assertLoadWindows(merged);
+    // Commercial agreement (Milestone 4 Phase 5): validated against the
+    // MERGED state — a patch that only touches one of the two fields must
+    // still be consistent with whichever value it did not resend.
+    assertValidCommercialMode({
+      commercialMode: merged.commercialMode,
+      postedRate: merged.postedRate?.toFixed(2) ?? null,
+    });
 
     const locChanged =
       input.originLocationId !== undefined || input.destinationLocationId !== undefined;
@@ -281,6 +354,10 @@ export class LoadsService {
             ? { deliveryWindowEnd: parseDate(input.deliveryWindowEnd) }
             : {}),
           ...routingData,
+          ...(input.commercialMode !== undefined ? { commercialMode: input.commercialMode } : {}),
+          ...(input.postedRate !== undefined
+            ? { postedRate: input.postedRate === null ? null : toDecimal(input.postedRate) }
+            : {}),
           updatedByUserId: actor.userId,
         },
       });
@@ -455,8 +532,16 @@ export class LoadsService {
   }
 
   /**
-   * `AWARDED → CARRIER_ASSIGNED`. The shipper confirms the awarded carrier is
-   * assigned to run the load. (The carrier was set atomically at award time.)
+   * `AWARDED → CARRIER_ASSIGNED`. LEGACY / RECOVERY PATH ONLY (Milestone 4
+   * Phase 5, §15): every NEW commercial acceptance — negotiated or booked —
+   * now performs this same transition automatically, in the same
+   * transaction as the award itself (see OffersService#executeCommercialAcceptance).
+   * A Phase-5 load never rests at AWARDED, so this endpoint can only ever
+   * legally apply to a load that reached AWARDED before automatic assignment
+   * existed. No separate "is this legacy" flag is introduced — the load's
+   * own authoritative status (still AWARDED, not yet CARRIER_ASSIGNED) IS
+   * the truthful signal; nothing is fabricated or backfilled. Retained, not
+   * deleted, and not wired into the new product workflow's UI.
    */
   async assign(actor: AuthenticatedActor, id: string): Promise<LoadView> {
     const load = await this.prisma.load.findUnique({ where: { id } });

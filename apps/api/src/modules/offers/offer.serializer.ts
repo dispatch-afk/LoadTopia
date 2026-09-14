@@ -71,6 +71,7 @@ export function toThreadSummary(t: SummaryRow, viewer: ViewerParty): OfferThread
     // Carrier identity is shown to the shipper (their negotiation) and admin — never to
     // another carrier (privacy is enforced by scoping, not by this field).
     carrier: viewer === "CARRIER" ? null : { companyId: t.carrierCompany.id, name: t.carrierCompany.name },
+    originType: t.originType,
     updatedAt: t.updatedAt.toISOString(),
   };
 }
@@ -139,6 +140,7 @@ export function toThreadView(t: DetailRow, viewer: ViewerParty, now: Date = new 
     currentExpiresAt: cur?.expiresAt.toISOString() ?? null,
     awaitingMyResponse: t.status === "ACTIVE" && respondingParty !== null && respondingParty === viewer,
     carrier: viewer === "CARRIER" ? null : { companyId: t.carrierCompany.id, name: t.carrierCompany.name },
+    originType: t.originType,
     updatedAt: t.updatedAt.toISOString(),
   };
 

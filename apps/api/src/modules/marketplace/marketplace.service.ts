@@ -5,20 +5,26 @@ import {
   isCarrierEligibleForLoad,
   MARKETPLACE_VISIBLE_STATUSES,
   Permission,
+  SHIPMENT_LOAD_STATUSES,
 } from "@loadtopia/domain";
 import {
   type AuthenticatedActor,
+  type BookAtPostedRateInput,
   type CreateOfferInput,
   LoadAudienceStage,
+  LoadStatus,
   type MarketplaceLoadListItem,
   type MarketplaceLoadView,
   type MarketplaceSearchQuery,
   type OfferThreadView,
   type Paginated,
+  type Pagination,
+  type ShipmentListItem,
 } from "@loadtopia/shared";
 import { AppError, forbidden, notFound } from "../../lib/errors";
 import { loadCarrierEligibilityContext } from "../../lib/carrier-context";
 import { paginate, toSkipTake } from "../../lib/pagination";
+import { shipmentListInclude, toShipmentListItem } from "../loads/loads.serializer";
 import { isLoadVisibleToCarrier } from "../loads/audience-access";
 import { resolveAcceptedShipperIds, resolveBlockedShipperIds } from "../loads/audience.query";
 import { OffersService } from "../offers/offers.service";
@@ -247,9 +253,56 @@ export class MarketplaceService {
     return this.offers.createOffer(actor, loadId, input);
   }
 
+  /** Book at Posted Rate (Milestone 4 Phase 5) — binding commercial
+   *  acceptance of a shipper's published rate. Delegates entirely to
+   *  OffersService, which converges on the same commercial-acceptance core
+   *  negotiated `accept()` uses — no separate booking engine here. */
+  async bookAtPostedRate(
+    actor: AuthenticatedActor,
+    loadId: string,
+    input: BookAtPostedRateInput,
+  ): Promise<OfferThreadView> {
+    return this.offers.bookAtPostedRate(actor, loadId, input);
+  }
+
   /** This carrier's negotiation on one load (for the board / load detail page). */
   async myThreadForLoad(actor: AuthenticatedActor, loadId: string) {
     assertPermission(actor, Permission.OFFER_READ_OWN);
     return this.offers.carrierThreadForLoad(actor, loadId);
+  }
+
+  /**
+   * Carrier "My Shipments" workspace (Milestone 4 Phase 5, §21-22) — the
+   * same Load rows as the marketplace board, scoped to loads THIS carrier
+   * won (`carrierCompanyId` — already indexed) and filtered to the shipment
+   * lifecycle. A carrier can never see another carrier's shipment: the scope
+   * is the row filter itself, not a post-hoc redaction.
+   */
+  async listMyShipments(
+    actor: AuthenticatedActor,
+    q: Pagination,
+  ): Promise<Paginated<ShipmentListItem>> {
+    assertPermission(actor, Permission.MARKETPLACE_BROWSE);
+    const carrierCompanyId = actor.companyId;
+    if (!carrierCompanyId) throw forbidden();
+
+    const where: Prisma.LoadWhereInput = {
+      carrierCompanyId,
+      status: { in: [...SHIPMENT_LOAD_STATUSES, LoadStatus.CANCELLED] },
+    };
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.load.findMany({
+        where,
+        include: shipmentListInclude,
+        orderBy: { updatedAt: "desc" },
+        ...toSkipTake(q),
+      }),
+      this.prisma.load.count({ where }),
+    ]);
+    return paginate(
+      rows.map((r) => toShipmentListItem(r, "carrier")),
+      total,
+      q,
+    );
   }
 }
