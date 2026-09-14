@@ -120,14 +120,36 @@ export function toLoadListItem(l: LoadListRow): LoadListItem {
   };
 }
 
-function toEventView(e: LoadDetailRow["events"][number]): LoadEventView {
+/**
+ * Timeline privacy (Milestone 4 Phase 6): the Load's own event log is now
+ * rendered to BOTH the owning shipper and the assigned carrier (previously
+ * shipper-only), so an event authored by a DIFFERENT company than the
+ * viewer's own — e.g. `first marketplace offer received`, whose actor is
+ * whichever carrier happened to submit the FIRST offer, win or lose — must
+ * never reveal that other company's identity to a carrier who isn't a party
+ * to it. The shipper (and admin) always see full attribution: it is their
+ * own load, and knowing which carrier acted on it is not information they
+ * lack authorization for. Only a CARRIER viewer has actor identity redacted
+ * for any event whose `actorCompanyId` is neither their own company nor the
+ * load's shipper. The event TYPE, status transition, and note text are never
+ * hidden — only WHO performed a third party's action.
+ */
+function toEventView(
+  e: LoadDetailRow["events"][number],
+  ctx: { viewerRole: LoadViewerRole; viewerCompanyId: string | null; shipperCompanyId: string },
+): LoadEventView {
+  const redact =
+    ctx.viewerRole === "carrier" &&
+    e.actorCompanyId !== null &&
+    e.actorCompanyId !== ctx.viewerCompanyId &&
+    e.actorCompanyId !== ctx.shipperCompanyId;
   return {
     id: e.id,
     type: e.type,
     fromStatus: e.fromStatus,
     toStatus: e.toStatus,
-    actorUserId: e.actorUserId,
-    actorName: e.actor ? `${e.actor.firstName} ${e.actor.lastName}` : null,
+    actorUserId: redact ? null : e.actorUserId,
+    actorName: redact ? null : e.actor ? `${e.actor.firstName} ${e.actor.lastName}` : null,
     note: e.note,
     createdAt: e.createdAt.toISOString(),
   };
@@ -181,7 +203,11 @@ function toAudienceView(l: LoadDetailRow): LoadAudienceView | null {
   };
 }
 
-export function toLoadView(l: LoadDetailRow, viewerRole: LoadViewerRole): LoadView {
+export function toLoadView(
+  l: LoadDetailRow,
+  viewerRole: LoadViewerRole,
+  viewerCompanyId: string | null = null,
+): LoadView {
   // The current POD state — deriveShipmentPodState already gives ANY active
   // APPROVED POD precedence over a newer PENDING_REVIEW/REJECTED one, so
   // this agrees with LoadsService#complete's own authoritative check (which
@@ -290,7 +316,9 @@ export function toLoadView(l: LoadDetailRow, viewerRole: LoadViewerRole): LoadVi
         : null,
     createdAt: l.createdAt.toISOString(),
     updatedAt: l.updatedAt.toISOString(),
-    events: l.events.map(toEventView),
+    events: l.events.map((e) =>
+      toEventView(e, { viewerRole, viewerCompanyId, shipperCompanyId: l.shipperCompanyId }),
+    ),
   };
 }
 

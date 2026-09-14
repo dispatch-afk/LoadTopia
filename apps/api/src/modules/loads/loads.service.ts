@@ -73,7 +73,9 @@ export class LoadsService {
     // counts (both SELECTED and NETWORK) now come from the frozen snapshot
     // already in `row.audienceMembers` — no live network query needed here
     // (review correction #2: NETWORK membership is snapshotted, not live).
-    return toLoadView(row, loadViewerRole(actor, row));
+    // `actor.companyId` drives timeline privacy redaction (Phase 6) — see
+    // toEventView's doc comment.
+    return toLoadView(row, loadViewerRole(actor, row), actor.companyId);
   }
 
   // -- create --------------------------------------------------------------
