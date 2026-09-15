@@ -33,6 +33,7 @@ import {
   type UpdateLoadInput,
 } from "@loadtopia/shared";
 import { AppError, badRequest, conflict, notFound } from "../../lib/errors";
+import { enforceLoadFacilityScope, loadFacilityScopeWhere } from "../../lib/facility-scope";
 import { appendLoadEvent, atomicLoadTransition } from "../../lib/load-lifecycle";
 import { paginate, toSkipTake } from "../../lib/pagination";
 import { toDecimal } from "../../lib/money";
@@ -173,9 +174,13 @@ export class LoadsService {
     q: ListLoadsQuery,
   ): Promise<Paginated<LoadListItem>> {
     assertPermission(actor, Permission.LOAD_READ_OWN);
+    // Facility scope (Milestone 4 Phase 7): pushed into the query, not filtered
+    // in memory — a company-wide membership gets `undefined` (no restriction).
+    const facilityScope = await loadFacilityScopeWhere(this.prisma, actor);
     const where: Prisma.LoadWhereInput = {
       shipperCompanyId: companyId,
       ...(q.status ? { status: q.status } : {}),
+      ...(facilityScope ? { AND: [facilityScope] } : {}),
     };
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.load.findMany({
@@ -204,11 +209,20 @@ export class LoadsService {
     q: Pagination,
   ): Promise<Paginated<ShipmentListItem>> {
     assertPermission(actor, Permission.LOAD_READ_OWN);
+    // Facility scope (Milestone 4 Phase 7): a second `OR` clause combined via
+    // `AND` alongside the existing shipment-status `OR` — a `where` object may
+    // only carry one top-level `OR` key.
+    const facilityScope = await loadFacilityScopeWhere(this.prisma, actor);
     const where: Prisma.LoadWhereInput = {
       shipperCompanyId: companyId,
-      OR: [
-        { status: { in: [...SHIPMENT_LOAD_STATUSES] } },
-        { status: LoadStatus.CANCELLED, carrierCompanyId: { not: null } },
+      AND: [
+        {
+          OR: [
+            { status: { in: [...SHIPMENT_LOAD_STATUSES] } },
+            { status: LoadStatus.CANCELLED, carrierCompanyId: { not: null } },
+          ],
+        },
+        ...(facilityScope ? [facilityScope] : []),
       ],
     };
     const [rows, total] = await this.prisma.$transaction([
@@ -230,10 +244,16 @@ export class LoadsService {
   async getById(actor: AuthenticatedActor, id: string): Promise<LoadView> {
     const load = await this.prisma.load.findUnique({
       where: { id },
-      select: { shipperCompanyId: true, carrierCompanyId: true },
+      select: {
+        shipperCompanyId: true,
+        carrierCompanyId: true,
+        originLocationId: true,
+        destinationLocationId: true,
+      },
     });
     if (!load) throw notFound("Load not found");
     assertCanReadLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     return this.loadDetail(id, actor);
   }
 
@@ -242,6 +262,7 @@ export class LoadsService {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_UPDATE_OWN);
 
     if (load.status !== LoadStatus.DRAFT) {
@@ -382,6 +403,7 @@ export class LoadsService {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_DELETE_OWN);
 
     if (load.status !== LoadStatus.DRAFT) {
@@ -418,6 +440,7 @@ export class LoadsService {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_POST);
 
     const routingIsMock = this.providers.routing.isMock;
@@ -549,6 +572,7 @@ export class LoadsService {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_UPDATE_OWN);
 
     assertLoadTransition(load.status, LoadStatus.CARRIER_ASSIGNED);
@@ -670,6 +694,7 @@ export class LoadsService {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_UPDATE_OWN);
 
     await this.prisma.$transaction(async (tx) => {
@@ -717,6 +742,7 @@ export class LoadsService {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_UPDATE_OWN);
 
     assertLoadTransition(load.status, LoadStatus.DRAFT);
@@ -735,6 +761,7 @@ export class LoadsService {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_CANCEL_OWN);
 
     if (!canCancelLoad(load.status)) {

@@ -30,6 +30,7 @@ import {
 } from "@loadtopia/shared";
 import { AppError, conflict, forbidden, notFound } from "../../lib/errors";
 import { loadCarrierEligibilityContext } from "../../lib/carrier-context";
+import { enforceLoadFacilityScope } from "../../lib/facility-scope";
 import { atomicLoadTransition, markLoadOfferReceived } from "../../lib/load-lifecycle";
 import { isLoadVisibleToCarrier } from "../loads/audience-access";
 import { cancelPendingReleases } from "../loads/release-engine";
@@ -361,7 +362,13 @@ export class OffersService {
           select: {
             id: true,
             carrierCompanyId: true,
-            load: { select: { shipperCompanyId: true } },
+            load: {
+              select: {
+                shipperCompanyId: true,
+                originLocationId: true,
+                destinationLocationId: true,
+              },
+            },
           },
         },
       },
@@ -370,6 +377,9 @@ export class OffersService {
     const { thread } = round;
     const viewer = this.viewerParty(actor, thread.carrierCompanyId, thread.load.shipperCompanyId);
     if (viewer === null || viewer === "ADMIN") throw notFound("Offer not found");
+    // Facility scope (Milestone 4 Phase 7): a no-op for the CARRIER branch —
+    // only constrains a scoped SHIPPER-side counter on an out-of-scope load.
+    await enforceLoadFacilityScope(this.prisma, actor, thread.load);
 
     this.assertRespondPermission(actor, viewer);
     assertCanRespond(
@@ -601,7 +611,13 @@ export class OffersService {
             currentRoundId: true,
             carrierCompanyId: true,
             loadId: true,
-            load: { select: { shipperCompanyId: true } },
+            load: {
+              select: {
+                shipperCompanyId: true,
+                originLocationId: true,
+                destinationLocationId: true,
+              },
+            },
           },
         },
       },
@@ -610,6 +626,9 @@ export class OffersService {
     const { thread } = round;
     const viewer = this.viewerParty(actor, thread.carrierCompanyId, thread.load.shipperCompanyId);
     if (viewer === null || viewer === "ADMIN") throw notFound("Offer not found");
+    // Facility scope (Milestone 4 Phase 7): a no-op for the CARRIER branch —
+    // only constrains a scoped SHIPPER awarding an out-of-scope load.
+    await enforceLoadFacilityScope(this.prisma, actor, thread.load);
 
     // Idempotent: this exact round already won.
     if (thread.status === "ACCEPTED" && thread.currentRoundId === roundId) {
@@ -985,12 +1004,21 @@ export class OffersService {
       select: {
         id: true,
         carrierCompanyId: true,
-        load: { select: { shipperCompanyId: true } },
+        load: {
+          select: {
+            shipperCompanyId: true,
+            originLocationId: true,
+            destinationLocationId: true,
+          },
+        },
       },
     });
     if (!thread) throw notFound("Offer not found");
     const viewer = this.viewerParty(actor, thread.carrierCompanyId, thread.load.shipperCompanyId);
     if (viewer === null || viewer === "ADMIN") throw notFound("Offer not found");
+    // Facility scope (Milestone 4 Phase 7): a no-op for the CARRIER (withdraw)
+    // branch — only constrains a scoped SHIPPER rejecting an out-of-scope load.
+    await enforceLoadFacilityScope(this.prisma, actor, thread.load);
 
     if (action === "reject") {
       if (viewer !== "SHIPPER") throw notFound("Offer not found");
@@ -1040,11 +1068,24 @@ export class OffersService {
   async getThread(actor: AuthenticatedActor, threadId: string): Promise<OfferThreadView> {
     const t = await this.prisma.offerThread.findUnique({
       where: { id: threadId },
-      select: { id: true, carrierCompanyId: true, load: { select: { shipperCompanyId: true } } },
+      select: {
+        id: true,
+        carrierCompanyId: true,
+        load: {
+          select: {
+            shipperCompanyId: true,
+            originLocationId: true,
+            destinationLocationId: true,
+          },
+        },
+      },
     });
     if (!t) throw notFound("Offer not found");
     const viewer = this.viewerParty(actor, t.carrierCompanyId, t.load.shipperCompanyId);
     if (viewer === null) throw notFound("Offer not found");
+    // Facility scope (Milestone 4 Phase 7): a no-op for the CARRIER branch —
+    // only constrains a scoped SHIPPER reading an out-of-scope load's thread.
+    await enforceLoadFacilityScope(this.prisma, actor, t.load);
     assertPermission(actor, Permission.OFFER_READ_OWN);
 
     await this.sweepThreads([threadId]);
@@ -1100,12 +1141,17 @@ export class OffersService {
   async listLoadThreads(actor: AuthenticatedActor, loadId: string): Promise<OfferThreadSummary[]> {
     const load = await this.prisma.load.findUnique({
       where: { id: loadId },
-      select: { shipperCompanyId: true },
+      select: {
+        shipperCompanyId: true,
+        originLocationId: true,
+        destinationLocationId: true,
+      },
     });
     if (!load) throw notFound("Load not found");
     if (actor.role !== "ADMIN" && actor.companyId !== load.shipperCompanyId) {
       throw notFound("Load not found");
     }
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.OFFER_READ_OWN);
 
     const activeIds = await this.prisma.offerThread.findMany({

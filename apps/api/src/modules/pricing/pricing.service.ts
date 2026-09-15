@@ -11,6 +11,7 @@ import {
 import { assertCanModifyLoad } from "@loadtopia/domain";
 import type { AuthenticatedActor } from "@loadtopia/shared";
 import { notFound } from "../../lib/errors";
+import { enforceLoadFacilityScope } from "../../lib/facility-scope";
 import { money, ratePerMile } from "../../lib/money";
 
 interface LaneInputs {
@@ -102,12 +103,15 @@ export class PricingService {
           equipmentType: true,
           mode: true,
           distanceMeters: true,
+          originLocationId: true,
+          destinationLocationId: true,
           origin: { select: { state: true } },
           destination: { select: { state: true } },
         },
       });
       if (!load) throw notFound("Load not found");
       assertCanModifyLoad(actor, load);
+      await enforceLoadFacilityScope(this.prisma, actor, load);
 
       const inputs: LaneInputs = {
         originState: load.origin.state,
@@ -205,10 +209,16 @@ export class PricingService {
   async listForLoad(actor: AuthenticatedActor, loadId: string): Promise<PricingSnapshotView[]> {
     const load = await this.prisma.load.findUnique({
       where: { id: loadId },
-      select: { shipperCompanyId: true, carrierCompanyId: true },
+      select: {
+        shipperCompanyId: true,
+        carrierCompanyId: true,
+        originLocationId: true,
+        destinationLocationId: true,
+      },
     });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     const rows = await this.prisma.pricingSnapshot.findMany({
       where: { loadId },
       orderBy: { createdAt: "desc" },

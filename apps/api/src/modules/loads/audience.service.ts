@@ -15,6 +15,7 @@ import {
 } from "@loadtopia/shared";
 import { appendLoadEvent } from "../../lib/load-lifecycle";
 import { conflict, notFound } from "../../lib/errors";
+import { enforceLoadFacilityScope } from "../../lib/facility-scope";
 import {
   expandSelectedAudience,
   freezeAudienceSnapshot,
@@ -81,6 +82,7 @@ export class AudienceService {
     const load = await this.prisma.load.findUnique({ where: { id: loadId } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
 
     const resolved = await resolveAudience(this.prisma, load.shipperCompanyId, input);
     return {

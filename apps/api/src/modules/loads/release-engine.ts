@@ -13,6 +13,7 @@ import {
 import { type AuthenticatedActor, LoadReleaseStatus } from "@loadtopia/shared";
 import { appendLoadEvent } from "../../lib/load-lifecycle";
 import { conflict, notFound } from "../../lib/errors";
+import { enforceLoadFacilityScope } from "../../lib/facility-scope";
 import { freezeAudienceSnapshot, resolveEligibleNetworkCarriers } from "./audience.query";
 
 type Tx = Prisma.TransactionClient;
@@ -255,6 +256,7 @@ async function loadAndStrategyForActor(
   const load = await tx.load.findUnique({ where: { id: loadId } });
   if (!load) throw notFound("Load not found");
   assertCanModifyLoad(actor, load);
+  await enforceLoadFacilityScope(tx, actor, load);
   const strategy = await tx.loadAudienceStrategyRecord.findUnique({ where: { loadId } });
   if (!strategy) {
     throw conflict("This load has no recorded audience strategy to manage");

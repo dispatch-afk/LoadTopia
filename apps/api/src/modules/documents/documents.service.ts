@@ -20,6 +20,7 @@ import {
 } from "@loadtopia/shared";
 import { randomUUID } from "node:crypto";
 import { AppError, conflict, forbidden, notFound, storageUnavailable } from "../../lib/errors";
+import { enforceLoadFacilityScope } from "../../lib/facility-scope";
 import { appendLoadEvent } from "../../lib/load-lifecycle";
 import { operationalDocumentStorageKey } from "./document-storage";
 import { toDocumentView } from "./documents.serializer";
@@ -53,10 +54,19 @@ export class DocumentsService {
   ): Promise<DocumentUploadRequestView> {
     const load = await this.prisma.load.findUnique({
       where: { id: loadId },
-      select: { shipperCompanyId: true, carrierCompanyId: true, status: true },
+      select: {
+        shipperCompanyId: true,
+        carrierCompanyId: true,
+        status: true,
+        originLocationId: true,
+        destinationLocationId: true,
+      },
     });
     if (!load) throw notFound("Load not found");
     assertCanUploadOperationalDocument(actor, load);
+    // Facility scope (Milestone 4 Phase 7): a no-op for the assigned carrier
+    // branch above — only constrains the shipper-company upload path.
+    await enforceLoadFacilityScope(this.prisma, actor, load);
 
     if (!isWithinOperationalActivityWindow(load.status)) {
       throw conflict(
@@ -118,7 +128,15 @@ export class DocumentsService {
     const doc = await this.prisma.loadDocument.findUnique({
       where: { id: documentId },
       include: {
-        load: { select: { shipperCompanyId: true, carrierCompanyId: true, status: true } },
+        load: {
+          select: {
+            shipperCompanyId: true,
+            carrierCompanyId: true,
+            status: true,
+            originLocationId: true,
+            destinationLocationId: true,
+          },
+        },
       },
     });
     if (!doc) throw notFound("Document not found");
@@ -126,6 +144,7 @@ export class DocumentsService {
     // LOAD_UPDATE_OWN; carrier: SHIPMENT_OPERATE_ASSIGNED + this load's carrier)
     // — not company membership alone (Slice 6A hardening). 404 outside scope.
     assertCanManageOwnOperationalDocument(actor, doc.load, doc);
+    await enforceLoadFacilityScope(this.prisma, actor, doc.load);
 
     if (doc.removedAt !== null) throw conflict("This document has been removed.");
     if (doc.confirmedAt !== null) {
@@ -217,10 +236,16 @@ export class DocumentsService {
   async list(actor: AuthenticatedActor, loadId: string): Promise<DocumentView[]> {
     const load = await this.prisma.load.findUnique({
       where: { id: loadId },
-      select: { shipperCompanyId: true, carrierCompanyId: true },
+      select: {
+        shipperCompanyId: true,
+        carrierCompanyId: true,
+        originLocationId: true,
+        destinationLocationId: true,
+      },
     });
     if (!load) throw notFound("Load not found");
     assertCanReadLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
 
     const rows = await this.prisma.loadDocument.findMany({
       where: { loadId, confirmedAt: { not: null }, removedAt: null },
@@ -235,10 +260,20 @@ export class DocumentsService {
   async download(actor: AuthenticatedActor, documentId: string): Promise<DocumentDownloadView> {
     const doc = await this.prisma.loadDocument.findUnique({
       where: { id: documentId },
-      include: { load: { select: { shipperCompanyId: true, carrierCompanyId: true } } },
+      include: {
+        load: {
+          select: {
+            shipperCompanyId: true,
+            carrierCompanyId: true,
+            originLocationId: true,
+            destinationLocationId: true,
+          },
+        },
+      },
     });
     if (!doc) throw notFound("Document not found");
     assertCanReadLoad(actor, doc.load);
+    await enforceLoadFacilityScope(this.prisma, actor, doc.load);
     if (doc.confirmedAt === null || doc.removedAt !== null) {
       throw notFound("Document not found");
     }
@@ -278,7 +313,15 @@ export class DocumentsService {
     const doc = await this.prisma.loadDocument.findUnique({
       where: { id: documentId },
       include: {
-        load: { select: { shipperCompanyId: true, carrierCompanyId: true, status: true } },
+        load: {
+          select: {
+            shipperCompanyId: true,
+            carrierCompanyId: true,
+            status: true,
+            originLocationId: true,
+            destinationLocationId: true,
+          },
+        },
         reviews: true,
       },
     });
@@ -286,6 +329,7 @@ export class DocumentsService {
     // Same rule as confirm: company scope AND the upload-request permission for
     // that company side — never membership alone (Slice 6A). 404 outside scope.
     assertCanManageOwnOperationalDocument(actor, doc.load, doc);
+    await enforceLoadFacilityScope(this.prisma, actor, doc.load);
     // Rev. 2 §6: only confirmed documents are removable; a never-confirmed intent
     // is invisible everywhere and simply "not found" here.
     if (doc.confirmedAt === null) throw notFound("Document not found");
