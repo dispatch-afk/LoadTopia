@@ -67,7 +67,19 @@ export const cancelLoadSchema = z
   .strict();
 export type CancelLoadInput = z.infer<typeof cancelLoadSchema>;
 
+/**
+ * Coverage grouping (Milestone 4 Phase 10) — a pure read/filter concept over
+ * the existing LoadStatus state machine, never a new status. Composes with
+ * `status` via AND, not override: `group=NEEDS_COVERAGE&status=POSTED`
+ * narrows to POSTED only; an incompatible combination (e.g.
+ * `group=COVERED&status=POSTED`) yields zero rows, exactly like any other
+ * AND-composed filter pair.
+ */
+export const coverageGroupSchema = z.enum(["DRAFT", "NEEDS_COVERAGE", "COVERED"]);
+export type CoverageGroup = z.infer<typeof coverageGroupSchema>;
+
 export const listLoadsSchema = paginationSchema.extend({
   status: z.nativeEnum(LoadStatus).optional(),
+  group: coverageGroupSchema.optional(),
 });
 export type ListLoadsQuery = z.infer<typeof listLoadsSchema>;

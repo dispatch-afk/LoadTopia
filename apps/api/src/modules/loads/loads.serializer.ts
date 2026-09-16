@@ -1,4 +1,5 @@
 import {
+  commercialNextAction,
   computeRatePerMile,
   deriveShipmentPodState,
   EXPOSED_LOAD_STATUSES,
@@ -116,6 +117,7 @@ export function toLoadListItem(l: LoadListRow): LoadListItem {
         }
       : null,
     activeOfferCount: l.offerThreads.length,
+    commercialNextAction: commercialNextAction(l.status),
     createdAt: l.createdAt.toISOString(),
   };
 }

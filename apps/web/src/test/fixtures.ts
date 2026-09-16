@@ -2,8 +2,11 @@ import type {
   CarrierFollowView,
   CompanyProfileView,
   ConnectionView,
+  LoadListItem,
   LoadView,
   LocationView,
+  MarketplaceLoadListItem,
+  OfferThreadSummary,
   OfferThreadView,
   RateConfirmationView,
 } from "@loadtopia/shared";
@@ -71,6 +74,85 @@ export function buildLoadView(overrides: Partial<LoadView> = {}): LoadView {
     ...overrides,
   } as LoadView;
 }
+
+/** Milestone 4 Phase 10 — a Loads-workspace row, for LoadCard component tests. */
+export function buildLoadListItem(overrides: Partial<LoadListItem> = {}): LoadListItem {
+  return {
+    id: "load-1",
+    referenceNumber: "LT-0001",
+    status: "DRAFT",
+    equipmentType: "DRY_VAN",
+    mode: "FTL",
+    weightLbs: 10000,
+    commodity: "General freight",
+    origin: { city: "Chicago", state: "IL" },
+    destination: { city: "Dallas", state: "TX" },
+    pickupWindowStart: null,
+    pickupWindowEnd: null,
+    deliveryWindowStart: null,
+    deliveryWindowEnd: null,
+    miles: 925,
+    audience: null,
+    activeOfferCount: 0,
+    commercialNextAction: "Finish Draft",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function offerThreadSummary(overrides: Partial<OfferThreadSummary> = {}): OfferThreadSummary {
+  return {
+    threadId: "thread-1",
+    loadId: "load-1",
+    status: "ACTIVE",
+    roundCount: 1,
+    currentAmount: "1200.00",
+    currentCurrency: "USD",
+    currentExpiresAt: "2026-01-02T00:00:00.000Z",
+    closedReason: null,
+    awaitingMyResponse: false,
+    carrier: null,
+    originType: "CARRIER_OFFER",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+/** Milestone 4 Phase 10 — a Find Freight board row, for MarketplaceCard
+ *  component tests. */
+export function buildMarketplaceLoadListItem(
+  overrides: Partial<MarketplaceLoadListItem> = {},
+): MarketplaceLoadListItem {
+  return {
+    id: "load-1",
+    referenceNumber: "LT-0001",
+    status: "POSTED",
+    equipmentType: "DRY_VAN",
+    mode: "FTL",
+    commodity: "General freight",
+    weightLbs: 10000,
+    origin: { city: "Chicago", state: "IL" },
+    destination: { city: "Dallas", state: "TX" },
+    pickupWindowStart: null,
+    pickupWindowEnd: null,
+    deliveryWindowStart: null,
+    deliveryWindowEnd: null,
+    miles: 925,
+    driveTimeMinutes: 780,
+    routing: { provider: "mock", isMock: true },
+    shipperCompanyId: "shipper-1",
+    shipperName: "Acme Freight",
+    shipperIsConnected: false,
+    postedAt: "2026-01-01T00:00:00.000Z",
+    myThread: null,
+    commercialMode: "REQUEST_OFFERS",
+    postedRate: null,
+    ratePerMile: null,
+    ...overrides,
+  } as MarketplaceLoadListItem;
+}
+
+export { offerThreadSummary as buildOfferThreadSummary };
 
 export function buildOfferThreadView(overrides: Partial<OfferThreadView> = {}): OfferThreadView {
   return {

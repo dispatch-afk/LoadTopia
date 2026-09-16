@@ -190,6 +190,10 @@ export interface LoadListItem {
   /** Null for DRAFT and for a pre-Phase-4 posted load — see LoadAudienceView. */
   audience: LoadListAudienceSummary | null;
   activeOfferCount: number;
+  /** Deterministic, factual "what happens next" copy — see `commercialNextAction`
+   *  in @loadtopia/domain (Milestone 4 Phase 10). The web layer renders this
+   *  verbatim; it never independently interprets `status` to derive its own. */
+  commercialNextAction: string;
   createdAt: string;
 }
 

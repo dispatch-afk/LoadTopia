@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@loadtopia/db";
 import {
+  ACTIVE_FREIGHT_STATUSES,
   assertCanModifyLoad,
   assertCanOperateShipment,
   assertCanReadLoad,
@@ -21,6 +22,7 @@ import { MOCK_PROVIDER_NAME, type ProviderRegistry } from "@loadtopia/providers"
 import {
   type AudiencePreviewInput,
   type AuthenticatedActor,
+  type CoverageGroup,
   type CreateLoadInput,
   type ListLoadsQuery,
   LoadStatus,
@@ -52,6 +54,19 @@ import {
 import { computeRouting } from "./routing";
 
 const parseDate = (v: string | null | undefined): Date | null => (v == null ? null : new Date(v));
+
+/**
+ * Coverage grouping (Milestone 4 Phase 10) — a pure read/filter mapping over
+ * the existing LoadStatus state machine, never a new status or a DB column.
+ * COVERED reuses ACTIVE_FREIGHT_STATUSES verbatim (the same domain constant
+ * Phase 9's block-continuity logic uses) — its semantics already match
+ * exactly (AWARDED..DELIVERED, explicitly excluding COMPLETED).
+ */
+const COVERAGE_GROUP_STATUSES: Record<CoverageGroup, readonly LoadStatus[]> = {
+  DRAFT: [LoadStatus.DRAFT],
+  NEEDS_COVERAGE: [LoadStatus.POSTED, LoadStatus.OFFER_RECEIVED],
+  COVERED: ACTIVE_FREIGHT_STATUSES,
+};
 
 export class LoadsService {
   private readonly pricing: PricingService;
@@ -204,10 +219,20 @@ export class LoadsService {
     // Facility scope (Milestone 4 Phase 7): pushed into the query, not filtered
     // in memory — a company-wide membership gets `undefined` (no restriction).
     const facilityScope = await loadFacilityScopeWhere(this.prisma, actor);
+    // Coverage group (Milestone 4 Phase 10) and the precise `status` filter
+    // compose via AND, never one overriding the other — e.g.
+    // group=NEEDS_COVERAGE&status=POSTED narrows to POSTED only;
+    // group=COVERED&status=POSTED (incompatible) yields zero rows. Combined
+    // into ONE `AND` array alongside facility scope, since a Prisma `where`
+    // may only carry one top-level `OR`/`AND` key per level.
+    const conditions: Prisma.LoadWhereInput[] = [
+      ...(q.status ? [{ status: q.status }] : []),
+      ...(q.group ? [{ status: { in: [...COVERAGE_GROUP_STATUSES[q.group]] } }] : []),
+      ...(facilityScope ? [facilityScope] : []),
+    ];
     const where: Prisma.LoadWhereInput = {
       shipperCompanyId: companyId,
-      ...(q.status ? { status: q.status } : {}),
-      ...(facilityScope ? { AND: [facilityScope] } : {}),
+      ...(conditions.length > 0 ? { AND: conditions } : {}),
     };
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.load.findMany({
