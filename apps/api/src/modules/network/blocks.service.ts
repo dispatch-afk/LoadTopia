@@ -161,6 +161,68 @@ export class BlocksService {
     });
   }
 
+  /**
+   * System-triggered continuity recheck (Milestone 4 Phase 9) — invoked
+   * automatically after an existing freight transition (shipment completion,
+   * or cancellation of an awarded/assigned load) can end "active shared
+   * freight" between two companies. Unlike {@link recheckContinuity} (the
+   * user-initiated NETWORK_MANAGE admin endpoint, gated to the blocking
+   * company's own primary member), this re-evaluates an OBJECTIVE FACT —
+   * does active freight still exist between this pair — on the system's own
+   * authority, not a specific user's. A block is directional
+   * (blockingCompanyId → blockedCompanyId); both possible directions between
+   * the pair are rechecked independently, since either party could have
+   * privately blocked the other. Reuses {@link hasActiveFreightBetween}
+   * (the exact same fact the manual endpoint checks) and the identical
+   * row-lock + conditional-update shape — no new state machine, no new
+   * event log (CompanyBlock has none; `effectiveAt` on the row itself IS
+   * the truthful activation record).
+   *
+   * Each pending block is resolved in its OWN short transaction — not the
+   * caller's freight transaction — so an infrastructure hiccup here can
+   * never roll back an already-authoritative shipment completion/
+   * cancellation (see the call sites in LoadsService, which invoke this
+   * only AFTER their own transaction has committed, and swallow/log any
+   * error rather than propagate it).
+   */
+  async recheckContinuityForCompanyPair(companyIdA: string, companyIdB: string): Promise<void> {
+    const pending = await this.prisma.companyBlock.findMany({
+      where: {
+        status: CompanyBlockStatus.PENDING_ON_COMPLETION,
+        OR: [
+          { blockingCompanyId: companyIdA, blockedCompanyId: companyIdB },
+          { blockingCompanyId: companyIdB, blockedCompanyId: companyIdA },
+        ],
+      },
+      select: { id: true },
+    });
+    if (pending.length === 0) return;
+
+    for (const { id } of pending) {
+      await this.prisma.$transaction(async (tx) => {
+        // Row lock first: under concurrent completion of two different
+        // shared shipments, whichever recheck gets here first decides;
+        // the second sees the already-updated (no longer PENDING) status
+        // below and no-ops — no duplicate activation.
+        await tx.$executeRaw`SELECT 1 FROM company_blocks WHERE id = ${id}::uuid FOR UPDATE`;
+        const fresh = await tx.companyBlock.findUnique({ where: { id } });
+        if (!fresh || fresh.status !== CompanyBlockStatus.PENDING_ON_COMPLETION) return;
+
+        const stillActive = await this.hasActiveFreightBetween(
+          tx,
+          fresh.blockingCompanyId,
+          fresh.blockedCompanyId,
+        );
+        if (stillActive) return;
+
+        await tx.companyBlock.update({
+          where: { id },
+          data: { status: CompanyBlockStatus.ACTIVE, effectiveAt: new Date() },
+        });
+      });
+    }
+  }
+
   async list(actor: AuthenticatedActor): Promise<CompanyBlockView[]> {
     assertPermission(actor, Permission.NETWORK_REQUEST);
     const rows = await this.prisma.companyBlock.findMany({

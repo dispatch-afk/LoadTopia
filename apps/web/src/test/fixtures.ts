@@ -81,6 +81,7 @@ export function buildOfferThreadView(overrides: Partial<OfferThreadView> = {}): 
     currentAmount: "1500.00",
     currentCurrency: "USD",
     currentExpiresAt: "2026-01-02T00:00:00.000Z",
+    closedReason: null,
     awaitingMyResponse: true,
     carrier: { companyId: "carrier-1", name: "Acme Trucking" },
     originType: "CARRIER_OFFER",

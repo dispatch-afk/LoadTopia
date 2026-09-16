@@ -37,6 +37,7 @@ import { enforceLoadFacilityScope, loadFacilityScopeWhere } from "../../lib/faci
 import { appendLoadEvent, atomicLoadTransition } from "../../lib/load-lifecycle";
 import { paginate, toSkipTake } from "../../lib/pagination";
 import { toDecimal } from "../../lib/money";
+import { BlocksService } from "../network/blocks.service";
 import { PricingService } from "../pricing/pricing.service";
 import { AudienceService } from "./audience.service";
 import { cancelPendingReleases } from "./release-engine";
@@ -55,6 +56,7 @@ const parseDate = (v: string | null | undefined): Date | null => (v == null ? nu
 export class LoadsService {
   private readonly pricing: PricingService;
   private readonly audience: AudienceService;
+  private readonly blocks: BlocksService;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -63,6 +65,31 @@ export class LoadsService {
   ) {
     this.pricing = new PricingService(prisma, providers.pricing);
     this.audience = new AudienceService(prisma);
+    this.blocks = new BlocksService(prisma);
+  }
+
+  /**
+   * Milestone 4 Phase 9 — best-effort, post-commit continuity recheck. Called
+   * only after a freight transition that can end "active shared freight"
+   * between the shipper and carrier (shipment completion, or cancellation of
+   * an already-awarded load) has ITSELF already committed. Deliberately
+   * NEVER allowed to fail the caller: an infrastructure hiccup in the block
+   * subsystem must not roll back or error out an otherwise-successful
+   * completion/cancellation — the freight transition remains authoritative.
+   * A skipped/failed recheck here is not a correctness loss: it is retried
+   * the next time either company's active-freight set changes again, or via
+   * the existing manual NETWORK_MANAGE recheck endpoint.
+   */
+  private async recheckBlockContinuityAfterFreightChange(
+    shipperCompanyId: string,
+    carrierCompanyId: string | null,
+  ): Promise<void> {
+    if (!carrierCompanyId) return; // no awarded carrier -> no pair to recheck
+    try {
+      await this.blocks.recheckContinuityForCompanyPair(shipperCompanyId, carrierCompanyId);
+    } catch (err) {
+      this.log.warn({ err, shipperCompanyId, carrierCompanyId }, "block continuity recheck failed");
+    }
   }
 
   private async loadDetail(id: string, actor: AuthenticatedActor): Promise<LoadView> {
@@ -735,6 +762,12 @@ export class LoadsService {
       });
     });
 
+    // Completion just ended this load's "active shared freight" window —
+    // re-evaluate any PENDING_ON_COMPLETION block between the pair. Runs
+    // only after the transaction above has committed; never allowed to
+    // fail this call (see recheckBlockContinuityAfterFreightChange).
+    await this.recheckBlockContinuityAfterFreightChange(load.shipperCompanyId, load.carrierCompanyId);
+
     return this.loadDetail(id, actor);
   }
 
@@ -781,6 +814,13 @@ export class LoadsService {
       // pending scheduled release in the SAME transaction (§7).
       await cancelPendingReleases(tx, id, "load_cancelled", actor.userId, actor.companyId);
     });
+
+    // Cancelling an AWARDED/CARRIER_ASSIGNED load ends "active shared
+    // freight" with that carrier just like completion does — re-evaluate
+    // continuity the same way. A no-op (carrierCompanyId is null) for a
+    // pre-award cancellation, since no specific carrier pairing exists yet.
+    await this.recheckBlockContinuityAfterFreightChange(load.shipperCompanyId, load.carrierCompanyId);
+
     return this.loadDetail(id, actor);
   }
 

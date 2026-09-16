@@ -613,6 +613,11 @@ export interface OfferThreadSummary {
   currentExpiresAt: string | null;
   /** True when it is this viewer's turn to respond to the current round. */
   awaitingMyResponse: boolean;
+  /** Why this thread closed (e.g. "load_awarded_to_other", "offer accepted"),
+   *  null while still ACTIVE. A factual system reason, never another party's
+   *  identity — Milestone 4 Phase 9 uses this to give a losing carrier a
+   *  truthful "Load Covered" state instead of a generic not-found. */
+  closedReason: string | null;
   carrier: { companyId: string; name: string } | null;
   /** How round 1 originated (Milestone 4 Phase 5) — a carrier's own offer, or
    *  a synthesized round representing the shipper's posted rate that this

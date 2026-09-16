@@ -35,6 +35,70 @@ function Detail({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+/**
+ * Milestone 4 Phase 9 — a losing carrier's truthful historical view. Built
+ * ENTIRELY from this carrier's own OfferThreadView (never the winner, never
+ * a competing rate, never Rate Confirmation/shipment/document data — none of
+ * that is fetched here, let alone rendered). `thread.load` carries only the
+ * lane/reference facts already legitimately part of this carrier's own
+ * negotiation record.
+ */
+function LoadCoveredView({ thread }: { thread: OfferThreadView }) {
+  const covered = thread.closedReason === "load_awarded_to_other";
+  return (
+    <div>
+      <PageHeader
+        title={thread.load.referenceNumber}
+        subtitle={covered ? "Load Covered" : "No longer available"}
+      />
+      <Link href="/marketplace" className="mb-4 inline-block text-sm text-brand-600 hover:underline">
+        ← Marketplace
+      </Link>
+
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="space-y-6 lg:col-span-2">
+          <Card className="p-5">
+            <h2 className="mb-4 text-sm font-semibold text-ink">Load details</h2>
+            <p className="mb-4 text-sm text-muted">
+              {covered
+                ? "This load has been covered and is no longer available."
+                : "This load is no longer available."}
+            </p>
+            <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Detail label="Origin" value={`${thread.load.origin.city}, ${thread.load.origin.state}`} />
+              <Detail
+                label="Destination"
+                value={`${thread.load.destination.city}, ${thread.load.destination.state}`}
+              />
+              <Detail label="Equipment" value={titleCase(thread.load.equipmentType)} />
+            </dl>
+          </Card>
+
+          <Card className="p-5">
+            <h2 className="mb-4 text-sm font-semibold text-ink">Your negotiation</h2>
+            <OfferThread thread={thread} />
+          </Card>
+        </div>
+
+        <div className="space-y-6">
+          <Card className="p-5">
+            <h2 className="mb-3 text-sm font-semibold text-ink">Find your next load</h2>
+            <p className="mb-3 text-sm text-muted">
+              This one isn&apos;t available anymore, but new freight is posted continually.
+            </p>
+            <Link
+              href="/marketplace"
+              className="inline-block rounded-lg bg-brand-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-brand-700"
+            >
+              Browse the marketplace
+            </Link>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const REASON_LABEL: Record<string, string> = {
   EQUIPMENT_INCOMPATIBLE: "Your profile equipment does not cover this load",
   SERVICE_AREA_MISMATCH: "This origin is outside your service area",
@@ -70,16 +134,26 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
   // Off-market: fall back to the authenticated load endpoint, authorized by the
   // server only for this load's shipper or awarded carrier.
   let load: LoadView | null = null;
+  let loadInaccessible = false;
   if (!market) {
     try {
       load = await apiServer<LoadView>(`/api/loads/${id}`);
     } catch (err) {
-      if (isScopeError(err)) notFound();
-      throw err;
+      if (isScopeError(err)) {
+        loadInaccessible = true;
+      } else {
+        throw err;
+      }
     }
   }
 
-  // The carrier's own negotiation on this load, if any.
+  // The carrier's own negotiation on this load, if any — fetched regardless
+  // of market/load access. A carrier's own offer thread is authorized by
+  // thread PARTICIPATION (see OffersService#getThread's viewerParty check),
+  // never by the load's current award/visibility state, so this still
+  // resolves even once the load has left the marketplace and gone to a
+  // different carrier (Milestone 4 Phase 9) — the mechanism a losing
+  // carrier's truthful "Load Covered" view below is built from.
   const { thread: summary } = await safe(
     apiServer<{ thread: OfferThreadSummary | null }>(`/api/marketplace/loads/${id}/offers`),
     { thread: null as OfferThreadSummary | null },
@@ -87,6 +161,18 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
   const thread: OfferThreadView | null = summary
     ? await safe(apiServer<OfferThreadView>(`/api/offers/threads/${summary.threadId}`), null)
     : null;
+
+  // Neither market/load access nor this carrier's own thread history
+  // resolved anything — genuinely unrelated to this load.
+  if (loadInaccessible && !market && !load && !thread) {
+    notFound();
+  }
+
+  // Off-market, not the shipper/winner, but this carrier DID participate —
+  // a truthful historical commercial view, never the winner or its terms.
+  if (loadInaccessible && !market && !load && thread) {
+    return <LoadCoveredView thread={thread} />;
+  }
 
   // ── Operational shipment (assigned / in motion / delivered / completed) —
   // the SAME shared, role-aware Shipment Detail the shipper's /loads/:id
