@@ -1,84 +1,61 @@
 import Link from "next/link";
-import type {
-  CarrierProfileView,
-  EquipmentView,
-  LoadListItem,
-  LocationView,
-  OfferThreadSummary,
-  Paginated,
-} from "@loadtopia/shared";
-import { ApiError, apiServer } from "@/lib/api-server";
-import { requireMe, activeMembership, can } from "@/lib/session";
+import type { DashboardSummaryView } from "@loadtopia/shared";
+import { apiServer } from "@/lib/api-server";
+import { requireMe, activeMembership } from "@/lib/session";
 import { Badge, Card, EmptyState, PageHeader } from "@/components/ui";
-import { LoadStatusBadge } from "@/components/load-status-badge";
-import { fmtDate, fmtDateTime, fmtMiles, fmtMoney, titleCase } from "@/lib/format";
+import { AttentionCenter, type AttentionCenterEntry } from "@/components/dashboard/attention-center";
+import { fmtDateTime, fmtMoney, titleCase } from "@/lib/format";
+import {
+  CARRIER_ATTENTION_HREF,
+  CARRIER_ATTENTION_LABEL,
+  SHIPPER_ATTENTION_HREF,
+  SHIPPER_ATTENTION_LABEL,
+} from "@/lib/dashboard-attention";
 import { OFFER_THREAD_STATUS_TONE } from "@/lib/status-tone";
-
-async function count(path: string): Promise<number> {
-  const r = await apiServer<Paginated<unknown>>(path, { query: { pageSize: 1 } });
-  return r.total;
-}
-
-/** Resolve to a fallback instead of throwing — for endpoints that legitimately
- *  403 depending on state (e.g. the marketplace board for a not-yet-eligible
- *  carrier). Keeps the dashboard out of the global error boundary. */
-async function safe<T>(p: Promise<T>, fallback: T): Promise<T> {
-  try {
-    return await p;
-  } catch (err) {
-    if (err instanceof ApiError && (err.status === 403 || err.status === 404)) return fallback;
-    throw err;
-  }
-}
 
 export default async function DashboardPage() {
   const me = await requireMe();
   const membership = activeMembership(me);
   const subtitle = membership ? `${membership.companyName} · ${membership.role}` : undefined;
 
-  // Carriers do NOT have `load:read:own` — they must never call GET /api/loads.
-  if (!can(me, "load:read:own")) {
-    return <CarrierDashboard firstName={me.user.firstName} subtitle={subtitle} />;
-  }
-  return <ShipperDashboard firstName={me.user.firstName} subtitle={subtitle} />;
-}
-
-// ── shipper (unchanged behavior) ─────────────────────────────────────────
-
-async function ShipperDashboard({
-  firstName,
-  subtitle,
-}: {
-  firstName: string;
-  subtitle?: string;
-}) {
-  const [recent, loadTotal, draftTotal, postedTotal, locTotal, eqTotal] = await Promise.all([
-    apiServer<Paginated<LoadListItem>>("/api/loads", { query: { pageSize: 6 } }),
-    count("/api/loads"),
-    count("/api/loads?status=DRAFT"),
-    count("/api/loads?status=POSTED"),
-    apiServer<Paginated<LocationView>>("/api/locations", { query: { pageSize: 1 } }).then(
-      (r) => r.total,
-    ),
-    apiServer<Paginated<EquipmentView>>("/api/equipment", { query: { pageSize: 1 } }).then(
-      (r) => r.total,
-    ),
-  ]);
-
-  const stats = [
-    { label: "Loads", value: loadTotal, href: "/loads" },
-    { label: "Draft", value: draftTotal, href: "/loads?status=DRAFT" },
-    { label: "Posted", value: postedTotal, href: "/loads?status=POSTED" },
-    { label: "Locations", value: locTotal, href: "/locations" },
-    { label: "Equipment", value: eqTotal, href: "/equipment" },
-  ];
+  const summary = await apiServer<DashboardSummaryView>("/api/dashboard/summary");
 
   return (
     <div>
-      <PageHeader title={`Welcome, ${firstName}`} subtitle={subtitle} />
+      <PageHeader title={`Welcome, ${me.user.firstName}`} subtitle={subtitle} />
+      {summary.role === "SHIPPER" ? (
+        <ShipperDashboard summary={summary} />
+      ) : (
+        <CarrierDashboard summary={summary} />
+      )}
+    </div>
+  );
+}
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        {stats.map((s) => (
+// ── shipper ─────────────────────────────────────────────────────────────
+
+function ShipperDashboard({ summary }: { summary: Extract<DashboardSummaryView, { role: "SHIPPER" }> }) {
+  const attentionItems: AttentionCenterEntry[] = summary.attention.map((item) => ({
+    key: item.kind,
+    label: SHIPPER_ATTENTION_LABEL[item.kind],
+    count: item.count,
+    href: SHIPPER_ATTENTION_HREF[item.kind],
+  }));
+
+  const overview = [
+    { label: "Active Shipments", value: summary.overview.activeShipmentCount, href: "/shipments" },
+    { label: "Draft Loads", value: summary.overview.draftLoadCount, href: "/loads?status=DRAFT" },
+    { label: "Total Loads", value: summary.overview.totalLoadCount, href: "/loads" },
+  ];
+
+  return (
+    <>
+      <div className="mt-6">
+        <AttentionCenter items={attentionItems} />
+      </div>
+
+      <div className="mt-6 grid grid-cols-3 gap-3">
+        {overview.map((s) => (
           <Link key={s.label} href={s.href}>
             <Card className="p-4 transition hover:border-brand-200">
               <p className="text-xs font-medium uppercase tracking-wide text-muted">{s.label}</p>
@@ -90,12 +67,12 @@ async function ShipperDashboard({
 
       <div className="mt-8">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-ink">Recent loads</h2>
-          <Link href="/loads" className="text-sm font-medium text-brand-600 hover:underline">
+          <h2 className="text-sm font-semibold text-ink">Recent shipments</h2>
+          <Link href="/shipments" className="text-sm font-medium text-brand-600 hover:underline">
             View all
           </Link>
         </div>
-        {recent.data.length === 0 ? (
+        {summary.overview.totalLoadCount === 0 ? (
           <EmptyState
             title="No loads yet"
             description="Create your first load to start managing freight."
@@ -108,31 +85,40 @@ async function ShipperDashboard({
               </Link>
             }
           />
+        ) : summary.recentShipments.length === 0 ? (
+          <EmptyState
+            title="No active shipments yet"
+            description="Once a carrier is assigned to a load, it will appear here."
+            action={
+              <Link href="/loads" className="text-sm font-medium text-brand-600 hover:underline">
+                View your loads
+              </Link>
+            }
+          />
         ) : (
           <Card className="divide-y divide-line">
-            {recent.data.map((l) => (
+            {summary.recentShipments.map((s) => (
               <Link
-                key={l.id}
-                href={`/loads/${l.id}`}
+                key={s.id}
+                href={`/loads/${s.id}`}
                 className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-canvas"
               >
                 <div className="min-w-0">
-                  <p className="font-medium text-ink">{l.referenceNumber}</p>
+                  <p className="font-medium text-ink">{s.referenceNumber}</p>
                   <p className="truncate text-sm text-muted">
-                    {l.origin.city}, {l.origin.state} → {l.destination.city}, {l.destination.state}
+                    {s.origin.city}, {s.origin.state} → {s.destination.city}, {s.destination.state}
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-4 text-sm text-muted">
-                  <span className="hidden sm:inline">{fmtMiles(l.miles)}</span>
-                  <span className="hidden sm:inline">{fmtDate(l.createdAt)}</span>
-                  <LoadStatusBadge status={l.status} />
+                  <span className="hidden sm:inline">{fmtDateTime(s.updatedAt)}</span>
+                  <Badge tone="indigo">{s.nextAction}</Badge>
                 </div>
               </Link>
             ))}
           </Card>
         )}
       </div>
-    </div>
+    </>
   );
 }
 
@@ -145,60 +131,35 @@ const ELIGIBILITY_TONE: Record<string, "gray" | "green" | "amber" | "red" | "ind
   SUSPENDED: "red",
 };
 
-async function CarrierDashboard({
-  firstName,
-  subtitle,
-}: {
-  firstName: string;
-  subtitle?: string;
-}) {
-  const [recentOffers, offerTotal, activeTotal, wonTotal, boardTotal, locTotal, eqTotal, profileRes] =
-    await Promise.all([
-      apiServer<Paginated<OfferThreadSummary>>("/api/offers", { query: { pageSize: 6 } }),
-      count("/api/offers"),
-      count("/api/offers?status=ACTIVE"),
-      count("/api/offers?status=ACCEPTED"),
-      // The board 403s for a carrier whose profile is not yet ELIGIBLE.
-      safe(count("/api/marketplace/loads"), null as number | null),
-      apiServer<Paginated<LocationView>>("/api/locations", { query: { pageSize: 1 } }).then(
-        (r) => r.total,
-      ),
-      apiServer<Paginated<EquipmentView>>("/api/equipment", { query: { pageSize: 1 } }).then(
-        (r) => r.total,
-      ),
-      apiServer<{ profile: CarrierProfileView | null }>("/api/carrier/profile"),
-    ]);
+function CarrierDashboard({ summary }: { summary: Extract<DashboardSummaryView, { role: "CARRIER" }> }) {
+  const attentionItems: AttentionCenterEntry[] = summary.attention.map((item) => ({
+    key: item.kind,
+    label: CARRIER_ATTENTION_LABEL[item.kind],
+    count: item.count,
+    href: CARRIER_ATTENTION_HREF[item.kind],
+  }));
 
-  const profile = profileRes.profile;
-
-  const stats: { label: string; value: number | string; href: string }[] = [
-    { label: "Available", value: boardTotal ?? "—", href: "/marketplace" },
-    { label: "Active offers", value: activeTotal, href: "/marketplace/offers" },
-    { label: "Won", value: wonTotal, href: "/marketplace/offers" },
-    { label: "Locations", value: locTotal, href: "/locations" },
-    { label: "Equipment", value: eqTotal, href: "/equipment" },
+  const overview = [
+    {
+      label: "Available Freight",
+      value: summary.overview.availableFreightCount ?? "—",
+      href: "/marketplace",
+    },
+    { label: "Active Offers", value: summary.overview.activeOfferCount, href: "/marketplace/offers" },
+    { label: "Won / Assigned", value: summary.overview.wonShipmentCount, href: "/my-shipments" },
   ];
 
-  const notEligible = !profile || profile.marketplaceEligibility !== "ELIGIBLE";
-
   return (
-    <div>
-      <PageHeader title={`Welcome, ${firstName}`} subtitle={subtitle} />
-
-      {notEligible && (
-        <Card className="mb-6 p-4">
+    <>
+      {!summary.marketplaceEligible && (
+        <Card className="mb-6 mt-6 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-sm font-medium text-ink">
-                Marketplace status:{" "}
-                <Badge tone={ELIGIBILITY_TONE[profile?.marketplaceEligibility ?? "PENDING"] ?? "gray"}>
-                  {titleCase(profile?.marketplaceEligibility ?? "No profile")}
-                </Badge>
+                Marketplace status: <Badge tone={ELIGIBILITY_TONE.PENDING}>Not eligible yet</Badge>
               </p>
               <p className="mt-1 text-xs text-muted">
-                {profile
-                  ? "Complete verification on your carrier profile to browse and bid on freight."
-                  : "Create your carrier profile to start bidding on freight."}
+                Complete verification on your carrier profile to browse and bid on freight.
               </p>
             </div>
             <Link
@@ -211,8 +172,12 @@ async function CarrierDashboard({
         </Card>
       )}
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        {stats.map((s) => (
+      <div className={summary.marketplaceEligible ? "mt-6" : ""}>
+        <AttentionCenter items={attentionItems} />
+      </div>
+
+      <div className="mt-6 grid grid-cols-3 gap-3">
+        {overview.map((s) => (
           <Link key={s.label} href={s.href}>
             <Card className="p-4 transition hover:border-brand-200">
               <p className="text-xs font-medium uppercase tracking-wide text-muted">{s.label}</p>
@@ -220,6 +185,49 @@ async function CarrierDashboard({
             </Card>
           </Link>
         ))}
+      </div>
+
+      <div className="mt-8">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-ink">My shipments</h2>
+          <Link href="/my-shipments" className="text-sm font-medium text-brand-600 hover:underline">
+            View all
+          </Link>
+        </div>
+        {summary.recentShipments.length === 0 ? (
+          <EmptyState
+            title="No active shipments yet"
+            description="Shipments you're assigned to will appear here."
+            action={
+              summary.marketplaceEligible ? (
+                <Link href="/marketplace" className="text-sm font-medium text-brand-600 hover:underline">
+                  Browse the marketplace
+                </Link>
+              ) : undefined
+            }
+          />
+        ) : (
+          <Card className="divide-y divide-line">
+            {summary.recentShipments.map((s) => (
+              <Link
+                key={s.id}
+                href={`/marketplace/${s.id}`}
+                className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-canvas"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-ink">{s.referenceNumber}</p>
+                  <p className="truncate text-sm text-muted">
+                    {s.origin.city}, {s.origin.state} → {s.destination.city}, {s.destination.state}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-4 text-sm text-muted">
+                  <span className="hidden sm:inline">{fmtDateTime(s.updatedAt)}</span>
+                  <Badge tone="indigo">{s.nextAction}</Badge>
+                </div>
+              </Link>
+            ))}
+          </Card>
+        )}
       </div>
 
       <div className="mt-8">
@@ -232,22 +240,24 @@ async function CarrierDashboard({
             View all
           </Link>
         </div>
-        {offerTotal === 0 ? (
+        {summary.recentOffers.length === 0 ? (
           <EmptyState
             title="No offers yet"
             description="Find freight on the marketplace and submit an offer."
             action={
-              <Link
-                href="/marketplace"
-                className="rounded-lg bg-brand-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-brand-700"
-              >
-                Browse the marketplace
-              </Link>
+              summary.marketplaceEligible ? (
+                <Link
+                  href="/marketplace"
+                  className="rounded-lg bg-brand-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-brand-700"
+                >
+                  Browse the marketplace
+                </Link>
+              ) : undefined
             }
           />
         ) : (
           <Card className="divide-y divide-line">
-            {recentOffers.data.map((t) => (
+            {summary.recentOffers.map((t) => (
               <Link
                 key={t.threadId}
                 href={`/marketplace/${t.loadId}`}
@@ -273,6 +283,6 @@ async function CarrierDashboard({
           </Card>
         )}
       </div>
-    </div>
+    </>
   );
 }

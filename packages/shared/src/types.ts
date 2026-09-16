@@ -920,3 +920,76 @@ export interface EligibleGroupCarrierView {
   companyId: string;
   companyName: string;
 }
+
+// --- Dashboard / Attention Center (Milestone 4 Phase 8) ------------------
+//
+// Plain read-model facts only — no scoring, no priority, no urgency. Every
+// count here is a deterministic function of existing Load/OfferThread state
+// (see `shipmentNextAction` / `deriveShipmentPodState` / `respondingParty`
+// in @loadtopia/domain, which this data agrees with by construction, not by
+// re-derivation). `kind` identifies WHAT fact an attention item represents;
+// the web layer owns the label copy and the link destination — the API
+// never dictates a route. Zero counts are still returned (never filtered
+// server-side) so the caller can decide how to present "nothing needs
+// attention" truthfully, without losing the underlying fact.
+
+export type ShipperAttentionKind =
+  | "NEEDS_COVERAGE"
+  | "POD_AWAITING_REVIEW"
+  | "READY_TO_COMPLETE"
+  | "REPLACEMENT_POD_NEEDED";
+
+export interface ShipperAttentionItem {
+  kind: ShipperAttentionKind;
+  count: number;
+}
+
+export interface ShipperDashboardOverview {
+  activeShipmentCount: number;
+  draftLoadCount: number;
+  totalLoadCount: number;
+}
+
+export interface ShipperDashboardSummary {
+  role: "SHIPPER";
+  overview: ShipperDashboardOverview;
+  /** All four kinds always present, in a fixed factual order — filtering to
+   *  non-zero is a presentation decision, made by the web layer. */
+  attention: ShipperAttentionItem[];
+  /** Facility-scope-enforced (Milestone 4 Phase 7) — identical guarantee as
+   *  GET /loads/shipments: an out-of-scope load can never appear here. */
+  recentShipments: ShipmentListItem[];
+}
+
+export type CarrierAttentionKind =
+  | "AWAITING_MY_RESPONSE"
+  | "AWAITING_PICKUP"
+  | "READY_FOR_TRANSIT_UPDATE"
+  | "AWAITING_DELIVERY_CONFIRMATION"
+  | "POD_NEEDED"
+  | "REPLACEMENT_POD_NEEDED";
+
+export interface CarrierAttentionItem {
+  kind: CarrierAttentionKind;
+  count: number;
+}
+
+export interface CarrierDashboardOverview {
+  /** Null — never 0 — when the carrier is not currently marketplace-eligible;
+   *  0 and "not eligible" are different facts and must never be conflated. */
+  availableFreightCount: number | null;
+  activeOfferCount: number;
+  wonShipmentCount: number;
+}
+
+export interface CarrierDashboardSummary {
+  role: "CARRIER";
+  marketplaceEligible: boolean;
+  overview: CarrierDashboardOverview;
+  /** All six kinds always present, in a fixed factual order. */
+  attention: CarrierAttentionItem[];
+  recentShipments: ShipmentListItem[];
+  recentOffers: OfferThreadSummary[];
+}
+
+export type DashboardSummaryView = ShipperDashboardSummary | CarrierDashboardSummary;

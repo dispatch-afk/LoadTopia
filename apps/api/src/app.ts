@@ -13,6 +13,7 @@ import { authRoutes } from "./modules/auth/auth.routes";
 import { carrierProfileRoutes } from "./modules/carrier/carrier-profile.routes";
 import { checkInsRoutes } from "./modules/check-ins/check-ins.routes";
 import { companiesRoutes } from "./modules/companies/companies.routes";
+import { dashboardRoutes } from "./modules/dashboard/dashboard.routes";
 import { documentsRoutes } from "./modules/documents/documents.routes";
 import { equipmentRoutes } from "./modules/equipment/equipment.routes";
 import { healthRoutes } from "./modules/health/health.routes";
@@ -93,6 +94,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await api.register(blocksRoutes);
       await api.register(carrierGroupsRoutes);
       await api.register(facilityScopeRoutes);
+      // Dashboard + Attention Center (Milestone 4 Phase 8)
+      await api.register(dashboardRoutes);
     },
     { prefix: "/api" },
   );
