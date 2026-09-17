@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { LoadStatus, type CoverageGroup, type Paginated, type LoadListItem } from "@loadtopia/shared";
 import { apiServer } from "@/lib/api-server";
+import { requireMe } from "@/lib/session";
 import { Badge, Button, EmptyState, PageHeader } from "@/components/ui";
+import { FacilityScopeBanner } from "@/components/facility-scope-banner";
 import { LoadStatusBadge } from "@/components/load-status-badge";
 import { LoadCard } from "@/components/loads/load-card";
 import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from "@/components/table";
@@ -43,6 +45,7 @@ export default async function LoadsPage({
     : undefined;
   const page = Math.max(1, Number(sp.page ?? "1") || 1);
 
+  const me = await requireMe();
   const result = await apiServer<Paginated<LoadListItem>>("/api/loads", {
     query: { page, pageSize: 20, group },
   });
@@ -51,6 +54,7 @@ export default async function LoadsPage({
 
   return (
     <div>
+      <FacilityScopeBanner scoped={me.facilityScoped} />
       <PageHeader
         title="Loads"
         subtitle="Freight you manage. Private to your company."

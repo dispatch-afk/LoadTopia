@@ -125,6 +125,16 @@ export class CompaniesService {
       orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
     });
 
+    // Milestone 4 Phase 11: freight-access summary per member, via ONE
+    // bounded query for the whole list — never one facility-scope request
+    // per member (which would be an N+1 as the member list grows).
+    const scopeCounts = await this.prisma.membershipFacilityScope.groupBy({
+      by: ["membershipId"],
+      where: { membershipId: { in: members.map((m) => m.id) } },
+      _count: { locationId: true },
+    });
+    const countByMembership = new Map(scopeCounts.map((r) => [r.membershipId, r._count.locationId]));
+
     return members.map((m) => ({
       membershipId: m.id,
       userId: m.user.id,
@@ -135,6 +145,7 @@ export class CompaniesService {
       isPrimary: m.isPrimary,
       isActive: m.isActive,
       createdAt: m.createdAt.toISOString(),
+      freightAccess: toFreightAccess(countByMembership.get(m.id) ?? 0),
     }));
   }
 
@@ -218,6 +229,7 @@ export class CompaniesService {
       where: { id: membershipId },
       include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } },
     });
+    const facilityCount = await this.prisma.membershipFacilityScope.count({ where: { membershipId } });
     return {
       membershipId: m.id,
       userId: m.user.id,
@@ -228,6 +240,11 @@ export class CompaniesService {
       isPrimary: m.isPrimary,
       isActive: m.isActive,
       createdAt: m.createdAt.toISOString(),
+      freightAccess: toFreightAccess(facilityCount),
     };
   }
+}
+
+function toFreightAccess(facilityCount: number): { companyWide: boolean; facilityCount: number } {
+  return { companyWide: facilityCount === 0, facilityCount };
 }

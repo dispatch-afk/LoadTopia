@@ -1,11 +1,25 @@
 import { loginSchema, registerSchema, switchCompanySchema } from "@loadtopia/shared";
 import { permissionsForRole } from "@loadtopia/domain";
+import type { PrismaClient } from "@loadtopia/db";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { writeAudit } from "../../lib/audit";
 import { AppError, unauthorized } from "../../lib/errors";
 import { hashSessionToken } from "../../lib/session";
 import { resolveSessionContext } from "../../lib/session-context";
 import { AuthService } from "./auth.service";
+
+/** Milestone 4 Phase 11: whether the ACTIVE membership has any
+ *  MembershipFacilityScope rows — a single bounded `count`, never a list of
+ *  the rows themselves. `null` when there is no active membership to
+ *  evaluate (e.g. platform staff with no company). */
+async function activeMembershipFacilityScoped(
+  prisma: PrismaClient,
+  membershipId: string | null,
+): Promise<boolean | null> {
+  if (!membershipId) return null;
+  const count = await prisma.membershipFacilityScope.count({ where: { membershipId } });
+  return count > 0;
+}
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   const service = new AuthService(
@@ -123,6 +137,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       activeCompanyId: actor.companyId,
       role: actor.companyId ? actor.role : null,
       permissions: actor.companyId || actor.role === "ADMIN" ? [...permissionsForRole(actor.role)] : [],
+      facilityScoped: await activeMembershipFacilityScoped(app.prisma, actor.membershipId),
     };
   });
 

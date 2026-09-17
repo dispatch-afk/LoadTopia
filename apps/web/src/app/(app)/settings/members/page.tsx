@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import type { CompanyMemberView } from "@loadtopia/shared";
 import { apiServer } from "@/lib/api-server";
-import { requireMe, can } from "@/lib/session";
+import { requireMe, can, isActivePrimary } from "@/lib/session";
 import { PageHeader } from "@/components/ui";
 import { MembersManager } from "@/components/members-manager";
 
@@ -21,6 +21,7 @@ export default async function MembersPage() {
         initial={data}
         currentUserId={me.user.id}
         canManage={can(me, "membership:manage")}
+        canManageFacilityScope={isActivePrimary(me)}
       />
     </div>
   );

@@ -3,6 +3,7 @@ import type { DashboardSummaryView } from "@loadtopia/shared";
 import { apiServer } from "@/lib/api-server";
 import { requireMe, activeMembership } from "@/lib/session";
 import { Badge, Card, EmptyState, PageHeader } from "@/components/ui";
+import { FacilityScopeBanner } from "@/components/facility-scope-banner";
 import { AttentionCenter, type AttentionCenterEntry } from "@/components/dashboard/attention-center";
 import { fmtDateTime, fmtMoney, titleCase } from "@/lib/format";
 import {
@@ -24,7 +25,7 @@ export default async function DashboardPage() {
     <div>
       <PageHeader title={`Welcome, ${me.user.firstName}`} subtitle={subtitle} />
       {summary.role === "SHIPPER" ? (
-        <ShipperDashboard summary={summary} />
+        <ShipperDashboard summary={summary} facilityScoped={me.facilityScoped} />
       ) : (
         <CarrierDashboard summary={summary} />
       )}
@@ -34,7 +35,13 @@ export default async function DashboardPage() {
 
 // ── shipper ─────────────────────────────────────────────────────────────
 
-function ShipperDashboard({ summary }: { summary: Extract<DashboardSummaryView, { role: "SHIPPER" }> }) {
+function ShipperDashboard({
+  summary,
+  facilityScoped,
+}: {
+  summary: Extract<DashboardSummaryView, { role: "SHIPPER" }>;
+  facilityScoped: boolean | null;
+}) {
   const attentionItems: AttentionCenterEntry[] = summary.attention.map((item) => ({
     key: item.kind,
     label: SHIPPER_ATTENTION_LABEL[item.kind],
@@ -51,6 +58,7 @@ function ShipperDashboard({ summary }: { summary: Extract<DashboardSummaryView, 
   return (
     <>
       <div className="mt-6">
+        <FacilityScopeBanner scoped={facilityScoped} />
         <AttentionCenter items={attentionItems} />
       </div>
 

@@ -254,6 +254,7 @@ function me(overrides: Partial<MeResponse> = {}): MeResponse {
     activeCompanyId: "co-carrier",
     role: "CARRIER",
     permissions: ["shipment:operate:assigned", "marketplace:browse"],
+    facilityScoped: null,
     ...overrides,
   };
 }

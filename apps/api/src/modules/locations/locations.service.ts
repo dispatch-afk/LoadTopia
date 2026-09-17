@@ -193,6 +193,17 @@ export class LocationsService {
       throw conflict("This location is used by an active load and cannot be removed");
     }
 
+    // Milestone 4 Phase 11: block removing a location still assigned as a
+    // member's facility scope — an admin must first reassign/clear that
+    // scope, rather than leave a scope row silently pointing at a dead
+    // location.
+    const scoped = await this.prisma.membershipFacilityScope.count({ where: { locationId: id } });
+    if (scoped > 0) {
+      throw conflict(
+        "This location is assigned to one or more team members' facility access and cannot be removed",
+      );
+    }
+
     const updated = await this.prisma.location.update({
       where: { id },
       data: { isActive: false },

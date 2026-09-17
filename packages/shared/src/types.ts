@@ -77,6 +77,12 @@ export interface MeResponse {
   activeCompanyId: string | null;
   role: UserRole | null;
   permissions: string[];
+  /** Whether the ACTIVE membership has one or more MembershipFacilityScope
+   *  rows (Milestone 4 Phase 11). `true` = facility-scoped, `false` =
+   *  company-wide (no rows), `null` when there is no active company
+   *  membership to evaluate (e.g. platform staff with no membership). Never
+   *  reveals anything about OTHER members' scope or hidden freight counts. */
+  facilityScoped: boolean | null;
 }
 
 export interface CompanyView {
@@ -98,6 +104,16 @@ export interface CompanyView {
   updatedAt: string;
 }
 
+/** A member's own-company freight access mode (Milestone 4 Phase 11) —
+ *  derived from MembershipFacilityScope, computed with one bounded query per
+ *  member LIST (never one request per member). `facilityCount` is a count of
+ *  facilities ASSIGNED TO THIS MEMBER, never a count of hidden/out-of-scope
+ *  freight. */
+export interface FreightAccessSummary {
+  companyWide: boolean;
+  facilityCount: number;
+}
+
 export interface CompanyMemberView {
   membershipId: string;
   userId: string;
@@ -108,6 +124,7 @@ export interface CompanyMemberView {
   isPrimary: boolean;
   isActive: boolean;
   createdAt: string;
+  freightAccess: FreightAccessSummary;
 }
 
 export interface LocationView {

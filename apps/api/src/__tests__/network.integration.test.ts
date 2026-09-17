@@ -761,9 +761,12 @@ suite("relationship network (M4 Phase 2, integration)", () => {
 
     it("one or more rows restricts scope, and duplicates in the request are not persisted twice", async () => {
       const s = await shipperCo();
+      await ordinaryMember(s, "SHIPPER", "dedupe");
       const loc = await createLocation(api, s.cookie, { city: "Austin", state: "TX" });
+      // Milestone 4 Phase 11: a membership may never edit its OWN scope, so
+      // this exercises the PUT against a DIFFERENT (ordinary) membership.
       const membershipId = await prisma.membership
-        .findFirstOrThrow({ where: { userId: s.userId, companyId: s.companyId } })
+        .findFirstOrThrow({ where: { companyId: s.companyId, userId: { not: s.userId } } })
         .then((m) => m.id);
 
       const set = await api.inject(
@@ -783,10 +786,11 @@ suite("relationship network (M4 Phase 2, integration)", () => {
 
     it("rejects a location belonging to another company", async () => {
       const s = await shipperCo();
+      await ordinaryMember(s, "SHIPPER", "foreign-loc");
       const other = await shipperCo("Other Shipper Co");
       const foreignLoc = await createLocation(api, other.cookie, { city: "Houston", state: "TX" });
       const membershipId = await prisma.membership
-        .findFirstOrThrow({ where: { userId: s.userId, companyId: s.companyId } })
+        .findFirstOrThrow({ where: { companyId: s.companyId, userId: { not: s.userId } } })
         .then((m) => m.id);
 
       const res = await api.inject(
@@ -797,6 +801,7 @@ suite("relationship network (M4 Phase 2, integration)", () => {
         }),
       );
       expect(res.statusCode).toBe(400);
+      expect(res.json().error.message).toMatch(/another company/i);
 
       const rows = await prisma.membershipFacilityScope.findMany({ where: { membershipId } });
       expect(rows).toHaveLength(0);
@@ -817,6 +822,23 @@ suite("relationship network (M4 Phase 2, integration)", () => {
         }),
       );
       expect(res.statusCode).toBe(403);
+    });
+
+    it("Milestone 4 Phase 11: a membership can never change its OWN facility scope, even the primary", async () => {
+      const s = await shipperCo();
+      const own = await prisma.membership
+        .findFirstOrThrow({ where: { userId: s.userId, companyId: s.companyId } })
+        .then((m) => m.id);
+
+      const res = await api.inject(
+        authed(s.cookie, {
+          method: "PUT",
+          url: `/api/memberships/${own}/facility-scope`,
+          payload: { locationIds: [] },
+        }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error.message).toMatch(/own facility scope/i);
     });
   });
 });

@@ -1,11 +1,14 @@
 import type {
   CarrierFollowView,
+  CompanyMemberView,
   CompanyProfileView,
   ConnectionView,
   LoadListItem,
   LoadView,
   LocationView,
   MarketplaceLoadListItem,
+  MeResponse,
+  MembershipView,
   OfferThreadSummary,
   OfferThreadView,
   RateConfirmationView,
@@ -303,6 +306,55 @@ export function buildCompanyProfileView(overrides: Partial<CompanyProfileView> =
       lastWorkedTogether: null,
       recentLanes: [],
     },
+    ...overrides,
+  };
+}
+
+/** Milestone 4 Phase 11 — app-shell / facility-scope fixtures. */
+export function buildMembershipView(overrides: Partial<MembershipView> = {}): MembershipView {
+  return {
+    membershipId: "membership-1",
+    companyId: "company-1",
+    companyName: "Acme Manufacturing",
+    companyType: "SHIPPER",
+    role: "SHIPPER",
+    isPrimary: true,
+    isActive: true,
+    ...overrides,
+  };
+}
+
+export function buildMeResponse(overrides: Partial<MeResponse> = {}): MeResponse {
+  const memberships = overrides.memberships ?? [buildMembershipView()];
+  return {
+    user: {
+      id: "user-1",
+      email: "shipper@it.test",
+      firstName: "Sam",
+      lastName: "Shipper",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    },
+    memberships,
+    activeCompanyId: memberships[0]?.companyId ?? null,
+    role: memberships[0]?.role ?? null,
+    permissions: [],
+    facilityScoped: null,
+    ...overrides,
+  };
+}
+
+export function buildCompanyMemberView(overrides: Partial<CompanyMemberView> = {}): CompanyMemberView {
+  return {
+    membershipId: "membership-1",
+    userId: "user-1",
+    email: "member@it.test",
+    firstName: "Sam",
+    lastName: "Shipper",
+    role: "SHIPPER",
+    isPrimary: true,
+    isActive: true,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    freightAccess: { companyWide: true, facilityCount: 0 },
     ...overrides,
   };
 }

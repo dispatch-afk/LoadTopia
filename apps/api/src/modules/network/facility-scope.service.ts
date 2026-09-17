@@ -32,7 +32,15 @@ export class FacilityScopeService {
    *  given location list. Both the membership and every location must
    *  belong to the SAME company — the database cannot express that
    *  cross-table invariant via FK alone, so it is verified here, inside the
-   *  same transaction as the write. */
+   *  same transaction as the write.
+   *
+   *  Milestone 4 Phase 11 guardrails:
+   *   - a membership may never edit its OWN facility scope (access control
+   *     boundary — a restricted user must not be able to restore their own
+   *     company-wide access), mirroring the existing "cannot deactivate your
+   *     own membership" rule in CompaniesService;
+   *   - every referenced location must be ACTIVE — an archived location can
+   *     never be (re)assigned as a facility. */
   async set(
     actor: AuthenticatedActor,
     membershipId: string,
@@ -45,13 +53,17 @@ export class FacilityScopeService {
     if (!membership) throw notFound("Membership not found");
     assertCompanyScope(actor, membership.companyId);
 
+    if (membership.userId === actor.userId) {
+      throw badRequest("You cannot change your own facility scope");
+    }
+
     const uniqueIds = Array.from(new Set(locationIds));
 
     return this.prisma.$transaction(async (tx) => {
       if (uniqueIds.length > 0) {
         const locations = await tx.location.findMany({
           where: { id: { in: uniqueIds } },
-          select: { id: true, companyId: true },
+          select: { id: true, companyId: true, isActive: true },
         });
         if (locations.length !== uniqueIds.length) {
           throw notFound("One or more locations were not found");
@@ -61,6 +73,10 @@ export class FacilityScopeService {
           throw badRequest(
             "A facility scope cannot reference a location belonging to another company",
           );
+        }
+        const inactive = locations.find((l) => !l.isActive);
+        if (inactive) {
+          throw badRequest("A facility scope cannot reference an inactive location");
         }
       }
 

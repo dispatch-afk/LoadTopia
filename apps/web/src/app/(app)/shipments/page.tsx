@@ -1,7 +1,9 @@
 import Link from "next/link";
 import type { Paginated, ShipmentListItem } from "@loadtopia/shared";
 import { apiServer } from "@/lib/api-server";
+import { requireMe } from "@/lib/session";
 import { Card, EmptyState, PageHeader } from "@/components/ui";
+import { FacilityScopeBanner } from "@/components/facility-scope-banner";
 import { LoadStatusBadge } from "@/components/load-status-badge";
 import { fmtMoney, fmtWindow } from "@/lib/format";
 
@@ -15,12 +17,14 @@ export default async function ShipmentsPage({
   const sp = await searchParams;
   const page = Math.max(1, Number(sp.page ?? "1") || 1);
 
+  const me = await requireMe();
   const result = await apiServer<Paginated<ShipmentListItem>>("/api/loads/shipments", {
     query: { page, pageSize: 20 },
   });
 
   return (
     <div>
+      <FacilityScopeBanner scoped={me.facilityScoped} />
       <PageHeader
         title="Shipments"
         subtitle="Freight you've covered — commercially agreed and moving. Private to your company."
