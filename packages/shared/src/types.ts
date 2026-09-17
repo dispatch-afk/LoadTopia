@@ -645,6 +645,15 @@ export interface OfferThreadSummary {
    *  carrier booked. Never implies a negotiation that did not happen. */
   originType: OfferThreadOriginType;
   updatedAt: string;
+  /** Milestone 4 Phase 12: the minimal load identity/lane context a thread
+   *  LIST needs to be usable on its own (previously a bare "View load"
+   *  link) — never the winner, a competing amount, or any commercial fact
+   *  beyond what this thread's own participant already legitimately sees. */
+  load: {
+    referenceNumber: string;
+    origin: { city: string; state: string };
+    destination: { city: string; state: string };
+  };
 }
 
 export interface OfferThreadView extends OfferThreadSummary {

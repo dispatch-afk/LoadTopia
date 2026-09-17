@@ -193,13 +193,13 @@ export default async function MarketplaceLoadPage({ params }: { params: Promise<
       <div>
         <PageHeader
           title={load.referenceNumber}
-          subtitle={`This load is ${titleCase(load.status)}`}
+          subtitle={`This shipment is ${titleCase(load.status)}`}
         />
         <Link
-          href="/marketplace"
+          href="/my-shipments"
           className="mb-4 inline-block text-sm text-brand-600 hover:underline"
         >
-          ← Marketplace
+          ← My Shipments
         </Link>
 
         <ShipmentDetail

@@ -25,6 +25,12 @@ describe("LoadCard", () => {
     expect(screen.getByText("Review Offers")).toBeInTheDocument();
   });
 
+  it("Milestone 4 Phase 12: renders commercialNextAction with the same indigo Badge treatment as the desktop Loads table", () => {
+    const l = buildLoadListItem({ commercialNextAction: "Review Offers" });
+    render(<LoadCard l={l} />);
+    expect(screen.getByText("Review Offers").className).toContain("bg-brand-100");
+  });
+
   it("shows Covered — View Shipment copy for a covered load and links to the existing /loads/:id route", () => {
     const l = buildLoadListItem({
       id: "load-42",

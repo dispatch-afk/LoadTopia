@@ -12,6 +12,7 @@ import type {
   OfferThreadSummary,
   OfferThreadView,
   RateConfirmationView,
+  ShipmentListItem,
 } from "@loadtopia/shared";
 
 function location(overrides: Partial<LocationView> = {}): LocationView {
@@ -117,6 +118,11 @@ function offerThreadSummary(overrides: Partial<OfferThreadSummary> = {}): OfferT
     carrier: null,
     originType: "CARRIER_OFFER",
     updatedAt: "2026-01-01T00:00:00.000Z",
+    load: {
+      referenceNumber: "LT-0001",
+      origin: { city: "Chicago", state: "IL" },
+      destination: { city: "Dallas", state: "TX" },
+    },
     ...overrides,
   };
 }
@@ -156,6 +162,30 @@ export function buildMarketplaceLoadListItem(
 }
 
 export { offerThreadSummary as buildOfferThreadSummary };
+
+/** Milestone 4 Phase 12 — a Shipments/My-Shipments workspace row, shared by
+ *  the shipper and carrier list endpoints alike. */
+export function buildShipmentListItem(overrides: Partial<ShipmentListItem> = {}): ShipmentListItem {
+  return {
+    id: "load-1",
+    referenceNumber: "LT-0001",
+    status: "CARRIER_ASSIGNED",
+    origin: { city: "Chicago", state: "IL" },
+    destination: { city: "Dallas", state: "TX" },
+    pickupWindowStart: "2026-01-05T13:00:00.000Z",
+    pickupWindowEnd: "2026-01-05T17:00:00.000Z",
+    deliveryWindowStart: "2026-01-07T13:00:00.000Z",
+    deliveryWindowEnd: "2026-01-07T17:00:00.000Z",
+    shipperCompanyId: "shipper-1",
+    shipperName: "Acme Manufacturing",
+    carrierCompanyId: "carrier-1",
+    carrierName: "Longhorn Transportation",
+    bookedRate: "1500.00",
+    nextAction: "Awaiting Pickup",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
 
 export function buildOfferThreadView(overrides: Partial<OfferThreadView> = {}): OfferThreadView {
   return {

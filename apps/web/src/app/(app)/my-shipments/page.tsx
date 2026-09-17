@@ -1,8 +1,10 @@
 import Link from "next/link";
 import type { Paginated, ShipmentListItem } from "@loadtopia/shared";
 import { apiServer } from "@/lib/api-server";
-import { Card, EmptyState, PageHeader } from "@/components/ui";
+import { Badge, EmptyState, PageHeader } from "@/components/ui";
 import { LoadStatusBadge } from "@/components/load-status-badge";
+import { CarrierShipmentCard } from "@/components/shipments/carrier-shipment-card";
+import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from "@/components/table";
 import { fmtMoney, fmtWindow } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -32,52 +34,57 @@ export default async function MyShipmentsPage({
           description="Once you win a load — by accepted offer or Book at Posted Rate — it appears here."
         />
       ) : (
-        <Card className="overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-canvas text-left text-xs uppercase tracking-wide text-muted">
+        <>
+          <div className="hidden md:block">
+            <Table>
+              <TableHead>
                 <tr>
-                  <th className="px-4 py-2.5 font-medium">Shipment</th>
-                  <th className="px-4 py-2.5 font-medium">Lane</th>
-                  <th className="px-4 py-2.5 font-medium">Shipper</th>
-                  <th className="px-4 py-2.5 font-medium">Pickup</th>
-                  <th className="px-4 py-2.5 font-medium">Delivery</th>
-                  <th className="px-4 py-2.5 font-medium">Rate</th>
-                  <th className="px-4 py-2.5 font-medium">Stage</th>
-                  <th className="px-4 py-2.5 font-medium">Next action</th>
+                  <TableHeaderCell>Shipment</TableHeaderCell>
+                  <TableHeaderCell>Lane</TableHeaderCell>
+                  <TableHeaderCell>Shipper</TableHeaderCell>
+                  <TableHeaderCell>Pickup</TableHeaderCell>
+                  <TableHeaderCell>Delivery</TableHeaderCell>
+                  <TableHeaderCell>Rate</TableHeaderCell>
+                  <TableHeaderCell>Stage</TableHeaderCell>
+                  <TableHeaderCell>Next action</TableHeaderCell>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-line">
+              </TableHead>
+              <TableBody>
                 {result.data.map((s) => (
-                  <tr key={s.id} className="hover:bg-canvas">
-                    <td className="whitespace-nowrap px-4 py-3 font-medium">
+                  <TableRow key={s.id}>
+                    <TableCell className="whitespace-nowrap font-medium">
                       <Link href={`/marketplace/${s.id}`} className="text-brand-600 hover:underline">
                         {s.referenceNumber}
                       </Link>
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3">
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
                       {s.origin.city}, {s.origin.state} → {s.destination.city}, {s.destination.state}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-muted">{s.shipperName}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-muted">
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-muted">{s.shipperName}</TableCell>
+                    <TableCell className="whitespace-nowrap text-muted">
                       {fmtWindow(s.pickupWindowStart, s.pickupWindowEnd)}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-muted">
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-muted">
                       {fmtWindow(s.deliveryWindowStart, s.deliveryWindowEnd)}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 font-medium">
-                      {fmtMoney(s.bookedRate)}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3">
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap font-medium">{fmtMoney(s.bookedRate)}</TableCell>
+                    <TableCell className="whitespace-nowrap">
                       <LoadStatusBadge status={s.status} />
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-muted">{s.nextAction}</td>
-                  </tr>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      <Badge tone="indigo">{s.nextAction}</Badge>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
-        </Card>
+          <div className="space-y-3 md:hidden">
+            {result.data.map((s) => (
+              <CarrierShipmentCard key={s.id} s={s} />
+            ))}
+          </div>
+        </>
       )}
 
       {result.totalPages > 1 && (

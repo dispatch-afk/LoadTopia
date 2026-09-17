@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { LoadStatus, type LoadListItem } from "@loadtopia/shared";
+import { Badge } from "@/components/ui";
 import { LoadStatusBadge } from "@/components/load-status-badge";
 import { audienceSummaryText } from "@/lib/audience";
 import { fmtWindow, titleCase } from "@/lib/format";
@@ -31,7 +32,9 @@ export function LoadCard({ l }: { l: LoadListItem }) {
           {l.activeOfferCount === 1 ? "" : "s"}
         </p>
       )}
-      <p className="mt-2 text-xs font-medium text-brand-700">{l.commercialNextAction}</p>
+      <p className="mt-2">
+        <Badge tone="indigo">{l.commercialNextAction}</Badge>
+      </p>
     </Link>
   );
 }

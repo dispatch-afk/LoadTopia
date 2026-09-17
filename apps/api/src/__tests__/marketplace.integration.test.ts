@@ -352,6 +352,21 @@ suite("marketplace (integration)", () => {
     // Carrier view never carries the competing carrier's identity.
     expect(mine.json().data[0].carrier).toBeNull();
 
+    // Milestone 4 Phase 12: the list now carries this thread's own load
+    // identity/lane (previously absent — a bare "View load" link) — but
+    // nothing beyond that. Values must match the actual load, and the
+    // response must never newly expose the competing carrier or any
+    // commercial fact beyond what this carrier's own thread already had.
+    const loadDetail = await api.inject(authed(s.cookie, { method: "GET", url: `/api/loads/${loadId}` }));
+    expect(mine.json().data[0].load).toEqual({
+      referenceNumber: loadDetail.json().referenceNumber,
+      origin: { city: "Chicago", state: "IL" },
+      destination: { city: "Dallas", state: "TX" },
+    });
+    const blob = JSON.stringify(mine.json());
+    expect(blob).not.toContain("Carrier Two");
+    expect(blob).not.toContain(c2.companyId);
+
     const shipperView = await api.inject(authed(s.cookie, { method: "GET", url: `/api/loads/${loadId}/offers` }));
     const threads = shipperView.json().data;
     expect(threads.map((t: { threadId: string }) => t.threadId).sort()).toEqual([t1, t2].sort());

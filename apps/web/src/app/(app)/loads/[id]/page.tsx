@@ -91,6 +91,9 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
     ? await Promise.all([fetchCheckIns(id), fetchDocuments(id), fetchRateConfirmation(id)])
     : [[], [], null];
 
+  // Milestone 4 Phase 12: once covered/operational, this is customer-facing a
+  // Shipment, not a Load — the back-link returns to the Shipments workspace
+  // it's actually listed on, not the Loads workspace it left once covered.
   const header = (
     <>
       <PageHeader
@@ -98,8 +101,11 @@ export default async function LoadDetailPage({ params }: { params: Promise<{ id:
         subtitle={`Created ${fmtDateTime(load.createdAt)} · updated ${fmtDateTime(load.updatedAt)}`}
         action={<LoadStatusBadge status={load.status} />}
       />
-      <Link href="/loads" className="mb-4 inline-block text-sm text-brand-600 hover:underline">
-        ← All loads
+      <Link
+        href={showOps ? "/shipments" : "/loads"}
+        className="mb-4 inline-block text-sm text-brand-600 hover:underline"
+      >
+        {showOps ? "← Shipments" : "← All loads"}
       </Link>
     </>
   );
