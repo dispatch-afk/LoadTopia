@@ -1,24 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { OfferThreadView } from "@loadtopia/shared";
 import { ApiError, apiClient } from "@/lib/api-client";
-import { fmtDateTime, titleCase } from "@/lib/format";
+import { fmtDateTime, fmtMoney, titleCase } from "@/lib/format";
+import { OFFER_THREAD_STATUS_TONE } from "@/lib/status-tone";
 import { Alert, Badge, Button, Field, Input, Spinner, Textarea } from "./ui";
-
-const STATUS_TONE: Record<string, "gray" | "green" | "amber" | "red" | "indigo"> = {
-  ACTIVE: "amber",
-  ACCEPTED: "green",
-  REJECTED: "red",
-  WITHDRAWN: "gray",
-  EXPIRED: "gray",
-};
-
-function money(v: string | null, currency = "USD") {
-  if (v == null) return "—";
-  return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(v));
-}
 
 /**
  * One negotiation thread with its full immutable round history and the actions
@@ -73,14 +62,24 @@ export function OfferThread({ thread }: { thread: OfferThreadView }) {
     <div className="rounded-xl border border-line bg-white p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          {thread.carrier && <span className="text-sm font-medium text-ink">{thread.carrier.name}</span>}
-          <Badge tone={STATUS_TONE[thread.status] ?? "gray"}>{titleCase(thread.status)}</Badge>
+          {thread.carrier && (
+            <Link
+              href={`/network/companies/${thread.carrier.companyId}`}
+              className="text-sm font-medium text-brand-600 hover:underline"
+            >
+              {thread.carrier.name}
+            </Link>
+          )}
+          <Badge tone={OFFER_THREAD_STATUS_TONE[thread.status]}>{titleCase(thread.status)}</Badge>
           {thread.awaitingMyResponse && thread.status === "ACTIVE" && (
             <Badge tone="indigo">Your move</Badge>
           )}
+          {thread.originType === "POSTED_RATE_BOOKING" && (
+            <Badge tone="gray">Booked at posted rate</Badge>
+          )}
         </div>
         <span className="text-sm font-semibold text-ink">
-          {money(thread.currentAmount, thread.currentCurrency)}
+          {fmtMoney(thread.currentAmount, thread.currentCurrency)}
         </span>
       </div>
 
@@ -88,7 +87,7 @@ export function OfferThread({ thread }: { thread: OfferThreadView }) {
         {thread.rounds.map((r) => (
           <li key={r.id} className="text-sm">
             <span className="font-medium text-ink">
-              {r.proposedByParty === "CARRIER" ? "Carrier" : "Shipper"} · {money(r.amount, r.currency)}
+              {r.proposedByParty === "CARRIER" ? "Carrier" : "Shipper"} · {fmtMoney(r.amount, r.currency)}
             </span>
             {r.isExpired && <span className="text-red-600"> · expired</span>}
             <span className="block text-xs text-muted">
@@ -142,7 +141,7 @@ export function OfferThread({ thread }: { thread: OfferThreadView }) {
         <div className="flex flex-wrap gap-2">
           {thread.actions.canAccept && (
             <Button onClick={accept} disabled={busy !== null}>
-              {busy === "accept" && <Spinner />} Accept {money(thread.currentAmount, thread.currentCurrency)}
+              {busy === "accept" && <Spinner />} Accept {fmtMoney(thread.currentAmount, thread.currentCurrency)}
             </Button>
           )}
           {thread.actions.canCounter && (

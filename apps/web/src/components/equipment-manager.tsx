@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { EQUIPMENT_TYPES, type EquipmentView, type Paginated } from "@loadtopia/shared";
 import { ApiError, apiClient, fieldErrors } from "@/lib/api-client";
+import { ConfirmDialog } from "./dialog";
 import { Alert, Badge, Button, Card, EmptyState, Field, Input, Select, Spinner } from "./ui";
 import { titleCase } from "@/lib/format";
 
@@ -16,6 +17,7 @@ export function EquipmentManager({ initial }: { initial: Paginated<EquipmentView
   const [fErr, setFErr] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [deactivating, setDeactivating] = useState<EquipmentView | null>(null);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   function openCreate() {
@@ -85,12 +87,13 @@ export function EquipmentManager({ initial }: { initial: Paginated<EquipmentView
   }
 
   async function deactivate(e: EquipmentView) {
-    if (!window.confirm(`Deactivate "${e.name ?? titleCase(e.type)}"?`)) return;
     try {
       const updated = await apiClient<EquipmentView>(`/equipment/${e.id}`, { method: "DELETE" });
       setItems((xs) => xs.map((x) => (x.id === updated.id ? updated : x)));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not deactivate");
+    } finally {
+      setDeactivating(null);
     }
   }
 
@@ -170,7 +173,7 @@ export function EquipmentManager({ initial }: { initial: Paginated<EquipmentView
                   <Button variant="ghost" onClick={() => openEdit(e)}>
                     Edit
                   </Button>
-                  <Button variant="ghost" onClick={() => deactivate(e)}>
+                  <Button variant="ghost" onClick={() => setDeactivating(e)}>
                     Deactivate
                   </Button>
                 </div>
@@ -179,6 +182,20 @@ export function EquipmentManager({ initial }: { initial: Paginated<EquipmentView
           ))}
         </Card>
       )}
+
+      <ConfirmDialog
+        open={deactivating !== null}
+        onOpenChange={(open) => !open && setDeactivating(null)}
+        title="Deactivate this equipment?"
+        description={
+          deactivating
+            ? `"${deactivating.name ?? titleCase(deactivating.type)}" will no longer be available to assign to loads.`
+            : undefined
+        }
+        confirmLabel="Deactivate"
+        tone="danger"
+        onConfirm={() => deactivating && deactivate(deactivating)}
+      />
     </div>
   );
 }

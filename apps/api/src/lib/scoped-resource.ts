@@ -2,6 +2,7 @@ import type { PrismaClient } from "@loadtopia/db";
 import { assertCanReadLoad, assertCompanyScope } from "@loadtopia/domain";
 import type { AuthenticatedActor } from "@loadtopia/shared";
 import { notFound } from "./errors";
+import { enforceLoadFacilityScope } from "./facility-scope";
 
 /**
  * Verify the caller may act on a company-owned resource BEFORE its request body
@@ -43,10 +44,16 @@ export async function assertResourceScope(
     case "load": {
       const row = await prisma.load.findUnique({
         where: { id },
-        select: { shipperCompanyId: true, carrierCompanyId: true },
+        select: {
+          shipperCompanyId: true,
+          carrierCompanyId: true,
+          originLocationId: true,
+          destinationLocationId: true,
+        },
       });
       if (!row) throw notFound("Load not found");
       assertCanReadLoad(actor, row);
+      await enforceLoadFacilityScope(prisma, actor, row);
       return;
     }
   }

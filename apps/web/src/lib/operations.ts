@@ -1,4 +1,4 @@
-import type { LoadStatus, LoadView, MeResponse } from "@loadtopia/shared";
+import type { DocumentView, LoadStatus, LoadView, MeResponse } from "@loadtopia/shared";
 
 /**
  * Frontend read-model for the Milestone 3 operational lifecycle. Every function
@@ -155,6 +155,34 @@ export function shipmentProgress(load: LoadView): ShipmentProgress {
   return { cancelled, cancelledAt: load.cancelledAt, steps };
 }
 
+/**
+ * Customer-facing operational stage label (Milestone 4 Phase 6) — presentation
+ * only, never a new `Load.status`. Identical to `titleCase(load.status)`
+ * except at DELIVERED, where it becomes "POD Review" once a POD has actually
+ * been uploaded (pending, rejected, or approved) — the internal status stays
+ * DELIVERED throughout; only the customer-facing label changes. Kept here
+ * rather than in `packages/domain` because it needs nothing beyond the
+ * `documents` list the page already fetches for `DocumentsPanel` — no new
+ * dependency, no query, no churn to an otherwise-working boundary.
+ */
+export function customerFacingStage(load: LoadView, documents: DocumentView[]): string {
+  if (load.status === "DELIVERED") {
+    const hasActivePod = documents.some(
+      (d) => d.docType === "POD" && d.confirmedAt !== null && d.removedAt === null,
+    );
+    return hasActivePod ? "POD Review" : "Delivered";
+  }
+  const LABEL: Partial<Record<LoadStatus, string>> = {
+    AWARDED: "Awarded",
+    CARRIER_ASSIGNED: "Awaiting Pickup",
+    PICKED_UP: "Picked Up",
+    IN_TRANSIT: "In Transit",
+    COMPLETED: "Completed",
+    CANCELLED: "Cancelled",
+  };
+  return LABEL[load.status] ?? load.status;
+}
+
 // --- Lifecycle actions ------------------------------------------------------
 
 export interface CarrierMovementAction {
@@ -280,4 +308,14 @@ export const LOAD_EVENT_LABELS: Record<string, string> = {
   DOCUMENT_REVIEWED: "Document reviewed",
   DOCUMENT_REMOVED: "Document removed",
   EXCEPTION_REPORTED: "Exception reported",
+  // Freight audience strategy (Milestone 4 Phase 4)
+  LOAD_POSTED_TO_MARKETPLACE: "Posted to Marketplace",
+  LOAD_POSTED_TO_NETWORK: "Posted to Carrier Network",
+  LOAD_POSTED_TO_SELECTED_CARRIERS: "Posted to selected carriers",
+  MARKETPLACE_RELEASE_SCHEDULED: "Marketplace release scheduled",
+  NETWORK_RELEASE_SCHEDULED: "Carrier Network release scheduled",
+  LOAD_RELEASED_TO_NETWORK: "Released to Carrier Network",
+  LOAD_RELEASED_TO_MARKETPLACE: "Released to Marketplace",
+  RELEASE_RESCHEDULED: "Scheduled release rescheduled",
+  RELEASE_CANCELLED: "Scheduled release cancelled",
 };

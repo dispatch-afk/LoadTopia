@@ -3,6 +3,7 @@ import { assertCanReadLoad } from "@loadtopia/domain";
 import type { AuthenticatedActor, RateConfirmationView } from "@loadtopia/shared";
 import type { StorageProvider } from "@loadtopia/providers";
 import { AppError, notFound } from "../../lib/errors";
+import { enforceLoadFacilityScope } from "../../lib/facility-scope";
 import { renderRateConfirmationPdf } from "./rate-confirmation.pdf";
 import { toRateConfirmationView } from "./rate-confirmation.serializer";
 
@@ -132,12 +133,21 @@ export class RateConfirmationService implements RateConfirmationGenerator {
   async getForLoad(actor: AuthenticatedActor, loadId: string): Promise<RateConfirmationView> {
     const load = await this.prisma.load.findUnique({
       where: { id: loadId },
-      select: { shipperCompanyId: true, carrierCompanyId: true },
+      select: {
+        shipperCompanyId: true,
+        carrierCompanyId: true,
+        originLocationId: true,
+        destinationLocationId: true,
+      },
     });
     if (!load) throw notFound("Load not found");
     assertCanReadLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
 
-    let rc = await this.prisma.rateConfirmation.findUnique({ where: { loadId } });
+    let rc = await this.prisma.rateConfirmation.findUnique({
+      where: { loadId },
+      include: { awardedOfferRound: { select: { thread: { select: { originType: true } } } } },
+    });
     if (!rc) {
       throw new AppError(
         404,
@@ -145,15 +155,21 @@ export class RateConfirmationService implements RateConfirmationGenerator {
         "No rate confirmation exists for this load",
       );
     }
+    // Read-only fact about how the agreement originated (Milestone 4 Phase
+    // 6) — never stored on the RC row, never affects its immutability.
+    const agreementSource = rc.awardedOfferRound.thread.originType;
 
     let download = await this.tryDownload(rc.storageKey, rc.status);
     if (!download) {
       // Lazily complete (or reconcile) generation, then try once more.
       await this.generate(loadId);
-      rc = await this.prisma.rateConfirmation.findUniqueOrThrow({ where: { loadId } });
+      rc = await this.prisma.rateConfirmation.findUniqueOrThrow({
+        where: { loadId },
+        include: { awardedOfferRound: { select: { thread: { select: { originType: true } } } } },
+      });
       download = await this.tryDownload(rc.storageKey, rc.status);
     }
 
-    return toRateConfirmationView(rc, download);
+    return toRateConfirmationView(rc, download, agreementSource);
   }
 }

@@ -1,21 +1,44 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { CompanyType } from "@loadtopia/shared";
 import { ApiError, apiClient, fieldErrors } from "@/lib/api-client";
 import { Alert, Button, Card, Field, Input, Select, Spinner } from "@/components/ui";
 
+const REGISTER_FALLBACK = (
+  <Card className="p-6">
+    <Spinner />
+  </Card>
+);
+
+/** Milestone 4 public site: `?type=shipper|carrier` preselects the company
+ *  type field — a truthful default only. Anything else (missing, invalid,
+ *  garbage) falls back to the existing SHIPPER default; the user can still
+ *  change it freely before submitting. */
+function initialCompanyTypeFrom(raw: string | null): string {
+  return raw?.toLowerCase() === "carrier" ? CompanyType.CARRIER : CompanyType.SHIPPER;
+}
+
 export default function RegisterPage() {
+  return (
+    <Suspense fallback={REGISTER_FALLBACK}>
+      <RegisterForm />
+    </Suspense>
+  );
+}
+
+function RegisterForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [form, setForm] = useState({
     firstName: "",
     lastName: "",
     email: "",
     password: "",
     companyName: "",
-    companyType: CompanyType.SHIPPER as string,
+    companyType: initialCompanyTypeFrom(searchParams.get("type")),
   });
   const [error, setError] = useState<string | null>(null);
   const [fErr, setFErr] = useState<Record<string, string>>({});

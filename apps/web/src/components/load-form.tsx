@@ -5,6 +5,7 @@ import { useState } from "react";
 import {
   EQUIPMENT_TYPES,
   TRANSPORT_MODES,
+  type LoadCommercialMode,
   type LoadView,
   type LocationView,
 } from "@loadtopia/shared";
@@ -38,6 +39,10 @@ export function LoadForm({ mode, load, initialLocations }: Props) {
     deliveryWindowStart: toLocalInputValue(load?.deliveryWindowStart ?? null),
     deliveryWindowEnd: toLocalInputValue(load?.deliveryWindowEnd ?? null),
   });
+  const [commercialMode, setCommercialMode] = useState<LoadCommercialMode>(
+    load?.commercialMode ?? "REQUEST_OFFERS",
+  );
+  const [postedRate, setPostedRate] = useState(load?.postedRate ?? "");
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   function buildPayload() {
@@ -58,6 +63,9 @@ export function LoadForm({ mode, load, initialLocations }: Props) {
       const iso = fromLocalInputValue(form[key]);
       p[key] = iso ?? (mode === "edit" ? null : undefined);
     }
+    p.commercialMode = commercialMode;
+    p.postedRate =
+      commercialMode === "PUBLISH_RATE" ? postedRate.trim() : mode === "edit" ? null : undefined;
     // Drop undefined keys on create so optional fields stay optional.
     return Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined));
   }
@@ -150,6 +158,54 @@ export function LoadForm({ mode, load, initialLocations }: Props) {
               onChange={(e) => set("weightLbs", e.target.value)}
             />
           </Field>
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <h2 className="mb-1 text-sm font-semibold text-ink">Commercial</h2>
+        <p className="mb-4 text-xs text-muted">How carriers will see this load's price. USD only.</p>
+        <div className="space-y-3">
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button
+              type="button"
+              aria-pressed={commercialMode === "PUBLISH_RATE"}
+              onClick={() => setCommercialMode("PUBLISH_RATE")}
+              className={`flex-1 rounded-lg border p-3 text-left transition ${
+                commercialMode === "PUBLISH_RATE"
+                  ? "border-brand-600 bg-brand-50"
+                  : "border-line bg-white hover:bg-canvas"
+              }`}
+            >
+              <p className="text-sm font-medium text-ink">Publish a Rate</p>
+              <p className="text-xs text-muted">
+                Enter a binding USD rate. Carriers may Book at that rate or Make an Offer.
+              </p>
+            </button>
+            <button
+              type="button"
+              aria-pressed={commercialMode === "REQUEST_OFFERS"}
+              onClick={() => setCommercialMode("REQUEST_OFFERS")}
+              className={`flex-1 rounded-lg border p-3 text-left transition ${
+                commercialMode === "REQUEST_OFFERS"
+                  ? "border-brand-600 bg-brand-50"
+                  : "border-line bg-white hover:bg-canvas"
+              }`}
+            >
+              <p className="text-sm font-medium text-ink">Request Carrier Offers</p>
+              <p className="text-xs text-muted">No price is shown. Carriers submit offers.</p>
+            </button>
+          </div>
+          {commercialMode === "PUBLISH_RATE" && (
+            <Field label="Rate (USD)" required error={fErr.postedRate}>
+              <Input
+                type="text"
+                inputMode="decimal"
+                value={postedRate}
+                onChange={(e) => setPostedRate(e.target.value)}
+                placeholder="4000.00"
+              />
+            </Field>
+          )}
         </div>
       </Card>
 

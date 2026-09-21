@@ -104,7 +104,8 @@ suite("manual check-ins (integration)", () => {
     return id;
   }
 
-  /** Post → offer → accept → assign. Returns { loadId }. */
+  /** Post → offer → accept. Milestone 4 Phase 5: acceptance now atomically
+   *  auto-assigns — no separate /assign call. Returns { loadId }. */
   async function assignedLoad(s: ShipperFx, c: Session): Promise<string> {
     const loadId = await postedLoad(s);
     const offer = await api.inject(
@@ -115,16 +116,13 @@ suite("manual check-ins (integration)", () => {
       }),
     );
     if (offer.statusCode !== 201) throw new Error(`offer ${offer.statusCode}: ${offer.body}`);
-    await api.inject(
+    const accept = await api.inject(
       authed(s.cookie, {
         method: "POST",
         url: `/api/offers/rounds/${offer.json().rounds[0].id}/accept`,
       }),
     );
-    const assign = await api.inject(
-      authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }),
-    );
-    if (assign.statusCode !== 200) throw new Error(`assign ${assign.statusCode}: ${assign.body}`);
+    if (accept.statusCode !== 200) throw new Error(`accept ${accept.statusCode}: ${accept.body}`);
     return loadId;
   }
 
@@ -167,6 +165,8 @@ suite("manual check-ins (integration)", () => {
   });
 
   it("an AWARDED (not yet assigned) load rejects check-ins", async () => {
+    // Milestone 4 Phase 5: acceptance now auto-assigns, so this window is
+    // only reachable as a legacy/historical row — constructed directly.
     const s = await shipper();
     const c = await carrier();
     const loadId = await postedLoad(s);
@@ -177,12 +177,16 @@ suite("manual check-ins (integration)", () => {
         payload: { amount: "1850.00", currency: "USD" },
       }),
     );
-    await api.inject(
-      authed(s.cookie, {
-        method: "POST",
-        url: `/api/offers/rounds/${offer.json().rounds[0].id}/accept`,
-      }),
-    );
+    await prisma.load.update({
+      where: { id: loadId },
+      data: {
+        status: "AWARDED",
+        carrierCompanyId: c.companyId,
+        awardedOfferRoundId: offer.json().rounds[0].id,
+        bookedRate: "1850.00",
+        awardedAt: new Date(),
+      },
+    });
     // AWARDED: canOperateShipment excludes this window → 403
     const res = await postCheckIn(c.cookie, loadId, CHI);
     expect(res.statusCode).toBe(403);
@@ -519,9 +523,7 @@ suite("manual check-ins (integration)", () => {
           url: `/api/offers/rounds/${offer.json().rounds[0].id}/accept`,
         }),
       );
-      await outageApi.inject(
-        authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }),
-      );
+      // Milestone 4 Phase 5: acceptance already auto-assigned — no /assign call.
 
       const res = await outageApi.inject(
         authed(c.cookie, {

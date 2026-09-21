@@ -1,5 +1,6 @@
 import type { AuthenticatedActor } from "@loadtopia/shared";
 import { LoadStatus, UserRole } from "@loadtopia/shared";
+import { type FacilityScopeRow, isLoadInFacilityScope } from "../network/facility-scope";
 import { Permission, roleHasPermission } from "./permissions";
 
 export class AuthorizationError extends Error {
@@ -33,6 +34,23 @@ export function assertPermission(actor: AuthenticatedActor, permission: Permissi
 
 export function isAdmin(actor: AuthenticatedActor): boolean {
   return actor.role === UserRole.ADMIN;
+}
+
+/**
+ * Company-owner-level authority (Milestone 4 Phase 2): the active membership
+ * is the company's PRIMARY membership, or the actor is platform staff. This
+ * is layered ON TOP OF a role permission (e.g. {@link Permission.NETWORK_MANAGE}),
+ * never a replacement for it — mirrors how facility scope is an ADDITIONAL
+ * restriction on top of role permissions, just for "who" instead of "where".
+ * Used for: accepting/declining/disconnecting a Connection, block/unblock,
+ * private carrier preference, Carrier Group management, facility-scope admin.
+ */
+export function isCompanyPrimaryAuthority(actor: AuthenticatedActor): boolean {
+  return isAdmin(actor) || actor.isPrimary === true;
+}
+
+export function assertCompanyPrimaryAuthority(actor: AuthenticatedActor): void {
+  if (!isCompanyPrimaryAuthority(actor)) throw new AuthorizationError();
 }
 
 /**
@@ -217,4 +235,54 @@ export function loadViewerRole(actor: AuthenticatedActor, load: LoadAccessView):
 /** A company's own record is readable/editable by its members (or staff). */
 export function canAccessCompany(actor: AuthenticatedActor, companyId: string): boolean {
   return isSameCompany(actor, companyId);
+}
+
+/** Minimal projection of a load needed for facility-scope decisions. Deliberately
+ *  NOT an extension of {@link LoadAccessView} — the check never reads
+ *  `carrierCompanyId`, and several shipper-side call sites (offer threads) only
+ *  have the load's `shipperCompanyId` + location ids on hand, not its
+ *  `carrierCompanyId` (a distinct concept from the offer thread's own carrier). */
+export interface FacilityScopedLoadAccessView {
+  shipperCompanyId: string;
+  originLocationId: string;
+  destinationLocationId: string;
+}
+
+/**
+ * Facility scope (Milestone 4 Phase 7): an ADDITIONAL "where" restriction
+ * layered on top of {@link canReadLoad}/{@link canModifyLoad}'s company-level
+ * "who" check — never a replacement for it, and never able to grant access
+ * those checks would deny. Applies ONLY to a genuine SHIPPER-company
+ * membership acting on its OWN company's freight (`actor.companyId ===
+ * load.shipperCompanyId`) — it is a no-op for admin/staff and for a carrier
+ * viewing/operating an awarded shipment (a carrier's own facility scope, if
+ * it has one, references its own company's locations and has no
+ * relationship to a shipper load's origin/destination; relationships and
+ * carrier marketplace access are likewise never facility-scoped — Milestone
+ * 4 Phase 2's locked non-scope, unchanged here).
+ *
+ * `scopeRows` is the ACTIVE membership's current facility-scope rows — the
+ * caller resolves these fresh per request via `actor.membershipId`, never
+ * cached, so a scope change or a company switch is honored immediately
+ * (never stale session state). No rows = company-wide, exactly like
+ * {@link isCompanyWideScope}.
+ */
+export function isLoadWithinActorFacilityScope(
+  actor: AuthenticatedActor,
+  load: FacilityScopedLoadAccessView,
+  scopeRows: readonly FacilityScopeRow[],
+): boolean {
+  if (isAdmin(actor)) return true;
+  if (actor.companyId !== load.shipperCompanyId) return true; // not this check's concern
+  return isLoadInFacilityScope(scopeRows, load);
+}
+
+export function assertLoadFacilityScope(
+  actor: AuthenticatedActor,
+  load: FacilityScopedLoadAccessView,
+  scopeRows: readonly FacilityScopeRow[],
+): void {
+  if (!isLoadWithinActorFacilityScope(actor, load, scopeRows)) {
+    throw new ResourceScopeError();
+  }
 }

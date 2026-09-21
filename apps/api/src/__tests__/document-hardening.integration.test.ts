@@ -136,7 +136,7 @@ suite("Slice 6A hardening — document manage-permission + actor-aware transitio
         url: `/api/offers/rounds/${offer.json().rounds[0].id}/accept`,
       }),
     );
-    await api.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }));
+    // Milestone 4 Phase 5: acceptance already auto-assigned — no /assign call.
     return loadId;
   }
 
@@ -360,11 +360,15 @@ suite("Slice 6A hardening — document manage-permission + actor-aware transitio
         url: `/api/offers/rounds/${offer.json().rounds[0].id}/accept`,
       }),
     );
-    // AWARDED — no endpoint moves it back to POSTED; unpost is DRAFT-targeted and 409s here
+    // Milestone 4 Phase 5: acceptance auto-assigns, so the load is already
+    // CARRIER_ASSIGNED here — no endpoint moves it back to POSTED or DRAFT;
+    // unpost is DRAFT-targeted and 409s regardless.
     const unpost = await api.inject(
       authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/unpost` }),
     );
     expect(unpost.statusCode).toBe(409);
-    expect((await prisma.load.findUniqueOrThrow({ where: { id: loadId } })).status).toBe("AWARDED");
+    expect((await prisma.load.findUniqueOrThrow({ where: { id: loadId } })).status).toBe(
+      "CARRIER_ASSIGNED",
+    );
   });
 });

@@ -29,6 +29,17 @@ export type CounterOfferInput = z.infer<typeof counterOfferSchema>;
 /** Accept the current round (finalises → atomic award). Body carries nothing. */
 export const acceptOfferSchema = z.object({}).strict();
 
+/**
+ * Book at Posted Rate (Milestone 4 Phase 5) — binding commercial acceptance
+ * of a shipper's published rate. `confirmedRate` is the EXACT USD amount the
+ * carrier saw and explicitly confirmed; the server independently re-reads
+ * the load's authoritative `postedRate` inside the award transaction and
+ * rejects (409 COMMERCIAL_TERMS_CHANGED) if it no longer matches — the
+ * carrier's prior page view is never trusted as authority.
+ */
+export const bookAtPostedRateSchema = z.object({ confirmedRate: positiveMoneySchema }).strict();
+export type BookAtPostedRateInput = z.infer<typeof bookAtPostedRateSchema>;
+
 /** Reject (shipper) / withdraw (carrier) a whole negotiation thread. */
 export const closeThreadSchema = z
   .object({ reason: z.string().trim().max(500).optional() })

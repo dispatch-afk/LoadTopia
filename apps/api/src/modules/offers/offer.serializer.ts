@@ -13,7 +13,19 @@ export type ViewerParty = "CARRIER" | "SHIPPER" | "ADMIN";
 export const threadSummaryInclude = {
   currentRound: { select: { amount: true, currency: true, expiresAt: true, proposedByCompanyId: true } },
   carrierCompany: { select: { id: true, name: true } },
-  load: { select: { shipperCompanyId: true, status: true } },
+  load: {
+    select: {
+      shipperCompanyId: true,
+      status: true,
+      // Milestone 4 Phase 12: widen the ALREADY-included `load` relation with
+      // the identity/lane facts a thread-summary LIST needs to be usable
+      // (My Offers previously showed only a bare "View load" link) — no new
+      // query, no new join, the same relation this include already fetches.
+      referenceNumber: true,
+      origin: { select: { city: true, state: true } },
+      destination: { select: { city: true, state: true } },
+    },
+  },
 } satisfies Prisma.OfferThreadInclude;
 
 export const threadDetailInclude = {
@@ -68,10 +80,17 @@ export function toThreadSummary(t: SummaryRow, viewer: ViewerParty): OfferThread
     currentExpiresAt: t.currentRound?.expiresAt.toISOString() ?? null,
     awaitingMyResponse:
       t.status === "ACTIVE" && respondingParty !== null && respondingParty === viewer,
+    closedReason: t.closedReason,
     // Carrier identity is shown to the shipper (their negotiation) and admin — never to
     // another carrier (privacy is enforced by scoping, not by this field).
     carrier: viewer === "CARRIER" ? null : { companyId: t.carrierCompany.id, name: t.carrierCompany.name },
+    originType: t.originType,
     updatedAt: t.updatedAt.toISOString(),
+    load: {
+      referenceNumber: t.load.referenceNumber,
+      origin: t.load.origin,
+      destination: t.load.destination,
+    },
   };
 }
 
@@ -138,8 +157,15 @@ export function toThreadView(t: DetailRow, viewer: ViewerParty, now: Date = new 
     currentCurrency: cur?.currency ?? "USD",
     currentExpiresAt: cur?.expiresAt.toISOString() ?? null,
     awaitingMyResponse: t.status === "ACTIVE" && respondingParty !== null && respondingParty === viewer,
+    closedReason: t.closedReason,
     carrier: viewer === "CARRIER" ? null : { companyId: t.carrierCompany.id, name: t.carrierCompany.name },
+    originType: t.originType,
     updatedAt: t.updatedAt.toISOString(),
+    load: {
+      referenceNumber: t.load.referenceNumber,
+      origin: t.load.origin,
+      destination: t.load.destination,
+    },
   };
 
   return {

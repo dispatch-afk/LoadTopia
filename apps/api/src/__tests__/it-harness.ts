@@ -19,11 +19,24 @@ const TABLES = [
   "rate_confirmations",
   "load_check_ins",
   "load_events",
+  // Freight audience strategy (Milestone 4 Phase 4)
+  "load_audience_releases",
+  "load_audience_members",
+  "load_audience_strategies",
   "loads",
   "carrier_profiles",
   "market_rates",
   "lanes",
   "equipment",
+  // Relationship network + facility scope (Milestone 4 Phase 2)
+  "carrier_group_members",
+  "carrier_groups",
+  "company_connection_events",
+  "company_connections",
+  "carrier_preferences",
+  "company_blocks",
+  "carrier_follows",
+  "membership_facility_scope",
   "locations",
   "sessions",
   "audit_logs",
@@ -133,4 +146,46 @@ export async function createLocation(
   );
   if (res.statusCode !== 201) throw new Error(`createLocation ${res.statusCode}: ${res.body}`);
   return res.json().id;
+}
+
+/**
+ * Add an EXISTING registered user (their own account, from a throwaway
+ * `registerCompany` call) as a NON-PRIMARY member of `companyId` — the
+ * primary's cookie authorizes the add — then log that user in and switch
+ * their active company to `companyId`. Returns their session cookie, now
+ * acting on `companyId` with `isPrimary: false` — the fixture every M4 Phase
+ * 2 "ordinary member is rejected" test needs.
+ */
+export async function addNonPrimaryMember(
+  api: FastifyInstance,
+  primaryCookie: string,
+  companyId: string,
+  member: { email: string; password?: string; role: "SHIPPER" | "CARRIER" },
+): Promise<string> {
+  const password = member.password ?? "integration-test-password";
+  const addRes = await api.inject(
+    authed(primaryCookie, {
+      method: "POST",
+      url: `/api/companies/${companyId}/members`,
+      payload: { email: member.email, role: member.role },
+    }),
+  );
+  if (addRes.statusCode !== 201) throw new Error(`addMember ${addRes.statusCode}: ${addRes.body}`);
+
+  const loginRes = await api.inject({
+    method: "POST",
+    url: "/api/auth/login",
+    payload: { email: member.email, password },
+  });
+  if (loginRes.statusCode !== 200) throw new Error(`login ${loginRes.statusCode}: ${loginRes.body}`);
+  const cookie = cookieFrom(loginRes);
+
+  const switchRes = await api.inject(
+    authed(cookie, { method: "POST", url: "/api/auth/switch-company", payload: { companyId } }),
+  );
+  if (switchRes.statusCode !== 200) {
+    throw new Error(`switch-company ${switchRes.statusCode}: ${switchRes.body}`);
+  }
+
+  return cookie;
 }

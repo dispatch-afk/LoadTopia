@@ -2,6 +2,7 @@ import type {
   ButtonHTMLAttributes,
   InputHTMLAttributes,
   ReactNode,
+  Ref,
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from "react";
@@ -10,9 +11,11 @@ import { cn } from "@/lib/format";
 export function Button({
   variant = "primary",
   className,
+  ref,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "secondary" | "ghost" | "danger";
+  ref?: Ref<HTMLButtonElement>;
 }) {
   const styles: Record<string, string> = {
     primary: "bg-brand-600 text-white hover:bg-brand-700 disabled:bg-brand-200",
@@ -22,6 +25,7 @@ export function Button({
   };
   return (
     <button
+      ref={ref}
       className={cn(
         "lt-focus inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition disabled:cursor-not-allowed",
         styles[variant],
@@ -61,12 +65,20 @@ export function Field({
 const controlCls =
   "lt-focus w-full rounded-lg border border-line bg-white px-3 py-2 text-sm placeholder:text-muted disabled:bg-canvas";
 
-export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input className={cn(controlCls, className)} {...props} />;
+export function Input({
+  className,
+  ref,
+  ...props
+}: InputHTMLAttributes<HTMLInputElement> & { ref?: Ref<HTMLInputElement> }) {
+  return <input ref={ref} className={cn(controlCls, className)} {...props} />;
 }
 
-export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea className={cn(controlCls, "min-h-20", className)} {...props} />;
+export function Textarea({
+  className,
+  ref,
+  ...props
+}: TextareaHTMLAttributes<HTMLTextAreaElement> & { ref?: Ref<HTMLTextAreaElement> }) {
+  return <textarea ref={ref} className={cn(controlCls, "min-h-20", className)} {...props} />;
 }
 
 export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
@@ -118,6 +130,27 @@ export function EmptyState({
     <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-line bg-white px-6 py-14 text-center">
       <p className="text-sm font-semibold text-ink">{title}</p>
       {description && <p className="mt-1 max-w-sm text-sm text-muted">{description}</p>}
+      {action && <div className="mt-4">{action}</div>}
+    </div>
+  );
+}
+
+export function ErrorState({
+  title = "Something went wrong",
+  description,
+  action,
+}: {
+  title?: string;
+  description?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div
+      role="alert"
+      className="flex flex-col items-center justify-center rounded-xl border border-red-200 bg-red-50 px-6 py-14 text-center"
+    >
+      <p className="text-sm font-semibold text-red-700">{title}</p>
+      {description && <p className="mt-1 max-w-sm text-sm text-red-600">{description}</p>}
       {action && <div className="mt-4">{action}</div>}
     </div>
   );

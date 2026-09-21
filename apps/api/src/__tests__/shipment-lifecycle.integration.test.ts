@@ -104,7 +104,10 @@ suite("shipment operational lifecycle (integration)", () => {
     return id;
   }
 
-  /** Post → offer → accept → assign. Returns an assigned load ready to operate. */
+  /** Post → offer → accept. Milestone 4 Phase 5: acceptance now atomically
+   *  auto-assigns in the same transaction — no separate /assign call needed
+   *  (and none is possible; the load is already CARRIER_ASSIGNED). Returns an
+   *  assigned load ready to operate. */
   async function assignedLoad(s: ShipperFx, c: Session): Promise<string> {
     const loadId = await postedLoad(s);
     const offer = await api.inject(
@@ -120,10 +123,6 @@ suite("shipment operational lifecycle (integration)", () => {
       authed(s.cookie, { method: "POST", url: `/api/offers/rounds/${roundId}/accept` }),
     );
     if (accept.statusCode !== 200) throw new Error(`accept ${accept.statusCode}: ${accept.body}`);
-    const assign = await api.inject(
-      authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }),
-    );
-    if (assign.statusCode !== 200) throw new Error(`assign ${assign.statusCode}: ${assign.body}`);
     return loadId;
   }
 
@@ -196,7 +195,7 @@ suite("shipment operational lifecycle (integration)", () => {
         url: `/api/offers/rounds/${wOffer.json().rounds[0].id}/accept`,
       }),
     );
-    await api.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }));
+    // Milestone 4 Phase 5: acceptance already auto-assigned — no /assign call.
 
     const res = await op(loser.cookie, loadId, "pickup");
     expect(res.statusCode).toBe(404);
@@ -257,6 +256,11 @@ suite("shipment operational lifecycle (integration)", () => {
   });
 
   it("an AWARDED (not yet assigned) load cannot use the pickup endpoint", async () => {
+    // Milestone 4 Phase 5: a NEW acceptance auto-assigns in the same
+    // transaction, so this window is no longer reachable via the live
+    // accept() endpoint — only via a legacy/historical row (see the
+    // "pre-M3 CARRIER_ASSIGNED load" test below for the same pattern).
+    // canOperateShipment's AWARDED exclusion is still real and still tested.
     const s = await shipper();
     const c = await carrier();
     const loadId = await postedLoad(s);
@@ -267,13 +271,18 @@ suite("shipment operational lifecycle (integration)", () => {
         payload: { amount: "1850.00", currency: "USD" },
       }),
     );
-    await api.inject(
-      authed(s.cookie, {
-        method: "POST",
-        url: `/api/offers/rounds/${offer.json().rounds[0].id}/accept`,
-      }),
-    );
-    // AWARDED, not CARRIER_ASSIGNED — the winning carrier still cannot operate.
+    const roundId = offer.json().rounds[0].id;
+    await prisma.load.update({
+      where: { id: loadId },
+      data: {
+        status: "AWARDED",
+        carrierCompanyId: c.companyId,
+        awardedOfferRoundId: roundId,
+        bookedRate: "1850.00",
+        awardedAt: new Date(),
+      },
+    });
+
     const res = await op(c.cookie, loadId, "pickup");
     expect(res.statusCode).toBe(403); // canOperateShipment excludes the AWARDED window
     const load = await prisma.load.findUniqueOrThrow({ where: { id: loadId } });
@@ -556,9 +565,7 @@ suite("shipment operational lifecycle (integration)", () => {
           url: `/api/offers/rounds/${offer.json().rounds[0].id}/accept`,
         }),
       );
-      await outageApi.inject(
-        authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }),
-      );
+      // Milestone 4 Phase 5: acceptance already auto-assigned — no /assign call.
       void sFx;
 
       for (const verb of ["pickup", "in-transit", "deliver"] as const) {
@@ -614,7 +621,12 @@ suite("shipment operational lifecycle (integration)", () => {
     return loadId;
   }
 
-  /** post → offer → accept, but NOT assign (load is AWARDED). */
+  /**
+   * A load AWARDED but NOT YET assigned. Milestone 4 Phase 5: the live
+   * accept() endpoint now auto-assigns in the same transaction, so this
+   * window is only reachable as a legacy/historical row — constructed
+   * directly, exactly like the "pre-M3 CARRIER_ASSIGNED load" fixture below.
+   */
   async function awardedLoad(s: ShipperFx, c: Session): Promise<string> {
     const loadId = await offerReceivedLoad(s, c);
     const thread = await api.inject(
@@ -625,10 +637,22 @@ suite("shipment operational lifecycle (integration)", () => {
       authed(s.cookie, { method: "GET", url: `/api/offers/threads/${threadId}` }),
     );
     const roundId = full.json().rounds[0].id;
-    const accept = await api.inject(
-      authed(s.cookie, { method: "POST", url: `/api/offers/rounds/${roundId}/accept` }),
-    );
-    if (accept.statusCode !== 200) throw new Error(`accept ${accept.statusCode}: ${accept.body}`);
+    await prisma.$transaction(async (tx) => {
+      await tx.load.update({
+        where: { id: loadId },
+        data: {
+          status: "AWARDED",
+          carrierCompanyId: c.companyId,
+          awardedOfferRoundId: roundId,
+          bookedRate: "1850.00",
+          awardedAt: new Date(),
+        },
+      });
+      await tx.offerThread.update({
+        where: { id: threadId },
+        data: { status: "ACCEPTED", closedAt: new Date() },
+      });
+    });
     return loadId;
   }
 

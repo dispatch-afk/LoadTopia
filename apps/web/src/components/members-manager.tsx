@@ -1,26 +1,39 @@
 "use client";
 
 import { useState } from "react";
-import { UserRole, type CompanyMemberView } from "@loadtopia/shared";
+import { UserRole, type CompanyMemberView, type FreightAccessSummary } from "@loadtopia/shared";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { FacilityScopeEditor } from "./facility-scope-editor";
 import { Alert, Badge, Button, Card, Field, Input, Select, Spinner } from "./ui";
+
+function freightAccessLabel(a: FreightAccessSummary): string {
+  if (a.companyWide) return "Company-wide";
+  return `${a.facilityCount} assigned facilit${a.facilityCount === 1 ? "y" : "ies"}`;
+}
 
 export function MembersManager({
   companyId,
   initial,
   currentUserId,
   canManage,
+  canManageFacilityScope,
 }: {
   companyId: string;
   initial: CompanyMemberView[];
   currentUserId: string;
   canManage: boolean;
+  /** Milestone 4 Phase 11: facility-scope editing requires company-primary
+   *  authority, a STRICTER gate than `canManage` (every active member holds
+   *  `membership:manage`, but only the primary/owner — or platform admin —
+   *  may change facility scope; the backend re-enforces this regardless). */
+  canManageFacilityScope: boolean;
 }) {
   const [members, setMembers] = useState(initial);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<string>(UserRole.SHIPPER);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [editingScopeFor, setEditingScopeFor] = useState<string | null>(null);
 
   async function add(e: React.FormEvent) {
     e.preventDefault();
@@ -51,6 +64,10 @@ export function MembersManager({
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not update member");
     }
+  }
+
+  function applyFreightAccess(membershipId: string, freightAccess: FreightAccessSummary) {
+    setMembers((m) => (m.map((x) => (x.membershipId === membershipId ? { ...x, freightAccess } : x))));
   }
 
   return (
@@ -89,7 +106,7 @@ export function MembersManager({
 
       <Card className="divide-y divide-line">
         {members.map((m) => (
-          <div key={m.membershipId} className="flex items-center justify-between gap-4 px-4 py-3">
+          <div key={m.membershipId} className="flex flex-wrap items-center justify-between gap-4 px-4 py-3">
             <div>
               <p className="font-medium text-ink">
                 {m.firstName} {m.lastName}{" "}
@@ -97,8 +114,20 @@ export function MembersManager({
                 {!m.isActive && <Badge tone="gray">Inactive</Badge>}
               </p>
               <p className="text-sm text-muted">{m.email}</p>
+              {m.isActive && (
+                <p className="mt-1 text-xs text-muted">
+                  Freight access: <Badge tone={m.freightAccess.companyWide ? "gray" : "indigo"}>
+                    {freightAccessLabel(m.freightAccess)}
+                  </Badge>
+                </p>
+              )}
             </div>
             <div className="flex items-center gap-2">
+              {canManageFacilityScope && m.userId !== currentUserId && m.isActive && (
+                <Button variant="secondary" onClick={() => setEditingScopeFor(m.membershipId)}>
+                  Manage access
+                </Button>
+              )}
               {canManage && m.userId !== currentUserId && m.isActive ? (
                 <>
                   <Select
@@ -127,6 +156,19 @@ export function MembersManager({
           </div>
         ))}
       </Card>
+
+      {members
+        .filter((m) => m.membershipId === editingScopeFor)
+        .map((m) => (
+          <FacilityScopeEditor
+            key={m.membershipId}
+            open={editingScopeFor === m.membershipId}
+            onOpenChange={(open) => setEditingScopeFor(open ? m.membershipId : null)}
+            membershipId={m.membershipId}
+            memberName={`${m.firstName} ${m.lastName}`}
+            onSaved={(freightAccess) => applyFreightAccess(m.membershipId, freightAccess)}
+          />
+        ))}
     </div>
   );
 }

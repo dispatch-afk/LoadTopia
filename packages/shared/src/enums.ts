@@ -71,6 +71,16 @@ export const LoadEventType = {
   DOCUMENT_REVIEWED: "DOCUMENT_REVIEWED",
   DOCUMENT_REMOVED: "DOCUMENT_REMOVED",
   EXCEPTION_REPORTED: "EXCEPTION_REPORTED",
+  // --- Milestone 4 Phase 4 (freight audience strategy) ---
+  LOAD_POSTED_TO_MARKETPLACE: "LOAD_POSTED_TO_MARKETPLACE",
+  LOAD_POSTED_TO_NETWORK: "LOAD_POSTED_TO_NETWORK",
+  LOAD_POSTED_TO_SELECTED_CARRIERS: "LOAD_POSTED_TO_SELECTED_CARRIERS",
+  MARKETPLACE_RELEASE_SCHEDULED: "MARKETPLACE_RELEASE_SCHEDULED",
+  NETWORK_RELEASE_SCHEDULED: "NETWORK_RELEASE_SCHEDULED",
+  LOAD_RELEASED_TO_NETWORK: "LOAD_RELEASED_TO_NETWORK",
+  LOAD_RELEASED_TO_MARKETPLACE: "LOAD_RELEASED_TO_MARKETPLACE",
+  RELEASE_RESCHEDULED: "RELEASE_RESCHEDULED",
+  RELEASE_CANCELLED: "RELEASE_CANCELLED",
 } as const;
 export type LoadEventType = (typeof LoadEventType)[keyof typeof LoadEventType];
 
@@ -159,3 +169,96 @@ export const OfferEventType = {
   EXPIRED: "EXPIRED",
 } as const;
 export type OfferEventType = (typeof OfferEventType)[keyof typeof OfferEventType];
+
+// --- Relationship network (Milestone 4 Phase 2) ----------------------------
+
+/** Mutable current state of a company-to-company Connection. There is no
+ *  stored "NONE" value — the absence of a `CompanyConnection` row IS "none". */
+export const ConnectionStatus = {
+  PENDING: "PENDING",
+  ACCEPTED: "ACCEPTED",
+  DECLINED: "DECLINED",
+  DISCONNECTED: "DISCONNECTED",
+} as const;
+export type ConnectionStatus = (typeof ConnectionStatus)[keyof typeof ConnectionStatus];
+
+/** Immutable connection lifecycle event log entry type. Deliberately no
+ *  separate RE_REQUESTED value — a REQUESTED event following a prior
+ *  DECLINED/DISCONNECTED event in the same connection's history already says
+ *  "this is a re-request" without a redundant type. */
+export const ConnectionEventType = {
+  REQUESTED: "REQUESTED",
+  ACCEPTED: "ACCEPTED",
+  DECLINED: "DECLINED",
+  DISCONNECTED: "DISCONNECTED",
+} as const;
+export type ConnectionEventType = (typeof ConnectionEventType)[keyof typeof ConnectionEventType];
+
+/** A shipper's PRIVATE preference on a carrier. Never a rating, never public,
+ *  never exposed to the carrier. */
+export const CarrierPreferenceType = {
+  PREFER: "PREFER",
+  DO_NOT_PREFER: "DO_NOT_PREFER",
+} as const;
+export type CarrierPreferenceType =
+  (typeof CarrierPreferenceType)[keyof typeof CarrierPreferenceType];
+
+/** Lifecycle of one CompanyBlock episode (one row per block "episode" —
+ *  unblocking does not delete the row, it moves to INACTIVE; a later re-block
+ *  between the same two companies in the same direction gets a NEW row). */
+export const CompanyBlockStatus = {
+  PENDING_ON_COMPLETION: "PENDING_ON_COMPLETION",
+  ACTIVE: "ACTIVE",
+  INACTIVE: "INACTIVE",
+} as const;
+export type CompanyBlockStatus = (typeof CompanyBlockStatus)[keyof typeof CompanyBlockStatus];
+
+// --- Freight audience strategy (Milestone 4 Phase 4) ------------------------
+
+/** The shipper's chosen distribution strategy, fixed at Review & Post. */
+export const LoadAudienceStrategyType = {
+  MARKETPLACE: "MARKETPLACE",
+  NETWORK_FIRST: "NETWORK_FIRST",
+  SELECTED_FIRST: "SELECTED_FIRST",
+} as const;
+export type LoadAudienceStrategyType =
+  (typeof LoadAudienceStrategyType)[keyof typeof LoadAudienceStrategyType];
+
+/** The current visibility boundary for a load's audience. Ordered
+ *  SELECTED < NETWORK < MARKETPLACE; only ever advances forward. */
+export const LoadAudienceStage = {
+  SELECTED: "SELECTED",
+  NETWORK: "NETWORK",
+  MARKETPLACE: "MARKETPLACE",
+} as const;
+export type LoadAudienceStage = (typeof LoadAudienceStage)[keyof typeof LoadAudienceStage];
+
+/** Lifecycle of one scheduled (or manually triggered) audience-widening
+ *  action. */
+export const LoadReleaseStatus = {
+  PENDING: "PENDING",
+  RELEASED: "RELEASED",
+  CANCELLED: "CANCELLED",
+} as const;
+export type LoadReleaseStatus = (typeof LoadReleaseStatus)[keyof typeof LoadReleaseStatus];
+
+// --- Commercial agreement (Milestone 4 Phase 5) ------------------------------
+
+/** The shipper's chosen commercial posture, set at create/edit time (DRAFT
+ *  only). PUBLISH_RATE carries a binding `Load.postedRate`; REQUEST_OFFERS
+ *  never does. Independent of the freight-audience strategy (WHO can see the
+ *  load) — this is WHAT they see once they can. */
+export const LoadCommercialMode = {
+  PUBLISH_RATE: "PUBLISH_RATE",
+  REQUEST_OFFERS: "REQUEST_OFFERS",
+} as const;
+export type LoadCommercialMode = (typeof LoadCommercialMode)[keyof typeof LoadCommercialMode];
+
+/** Which action produced round 1 of an OfferThread. Default CARRIER_OFFER is
+ *  truthful for every thread created before this feature shipped. */
+export const OfferThreadOriginType = {
+  CARRIER_OFFER: "CARRIER_OFFER",
+  POSTED_RATE_BOOKING: "POSTED_RATE_BOOKING",
+} as const;
+export type OfferThreadOriginType =
+  (typeof OfferThreadOriginType)[keyof typeof OfferThreadOriginType];

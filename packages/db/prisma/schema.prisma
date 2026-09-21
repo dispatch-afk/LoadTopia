@@ -89,6 +89,16 @@ enum LoadEventType {
   DOCUMENT_REVIEWED
   DOCUMENT_REMOVED
   EXCEPTION_REPORTED
+  // --- Milestone 4 Phase 4 (freight audience strategy) ---
+  LOAD_POSTED_TO_MARKETPLACE
+  LOAD_POSTED_TO_NETWORK
+  LOAD_POSTED_TO_SELECTED_CARRIERS
+  MARKETPLACE_RELEASE_SCHEDULED
+  NETWORK_RELEASE_SCHEDULED
+  LOAD_RELEASED_TO_NETWORK
+  LOAD_RELEASED_TO_MARKETPLACE
+  RELEASE_RESCHEDULED
+  RELEASE_CANCELLED
 }
 
 // --- Operations (Milestone 3) --------------------------------------------- -
@@ -168,6 +178,92 @@ enum OfferEventType {
 // (The Phase 0 `OfferStatus` enum + `LoadOffer` placeholder are replaced by the
 //  Milestone 2 OfferThread / OfferRound / OfferEvent model below.)
 
+// --- Relationship network (Milestone 4 Phase 2) ---------------------------
+
+/// Mutable current state of a company-to-company Connection. There is no
+/// stored "NONE" — the absence of a CompanyConnection row IS "none".
+enum ConnectionStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  DISCONNECTED
+}
+
+/// Immutable connection lifecycle event type. Deliberately no separate
+/// RE_REQUESTED value — see CompanyConnectionEvent's doc comment.
+enum ConnectionEventType {
+  REQUESTED
+  ACCEPTED
+  DECLINED
+  DISCONNECTED
+}
+
+/// A shipper's PRIVATE preference on a carrier. Never a rating, never public.
+enum CarrierPreferenceType {
+  PREFER
+  DO_NOT_PREFER
+}
+
+/// Lifecycle of one CompanyBlock episode.
+enum CompanyBlockStatus {
+  PENDING_ON_COMPLETION
+  ACTIVE
+  INACTIVE
+}
+
+// --- Freight audience strategy (Milestone 4 Phase 4) -----------------------
+
+/// The shipper's chosen distribution strategy, fixed at Review & Post. Never
+/// changes after posting — audience WIDENS over time via `currentStage`
+/// advancing, never by picking a different strategy.
+enum LoadAudienceStrategyType {
+  MARKETPLACE
+  NETWORK_FIRST
+  SELECTED_FIRST
+}
+
+/// The current visibility boundary for a load's audience. Ordered
+/// SELECTED < NETWORK < MARKETPLACE — `currentStage` only ever advances
+/// forward (see LoadAudienceStrategyRecord.currentStage / the release engine).
+enum LoadAudienceStage {
+  SELECTED
+  NETWORK
+  MARKETPLACE
+}
+
+/// Lifecycle of one scheduled (or manually triggered) audience-widening
+/// action. PENDING rows are claimed compare-and-set by the release engine —
+/// see LoadAudienceRelease.
+enum LoadReleaseStatus {
+  PENDING
+  RELEASED
+  CANCELLED
+}
+
+// --- Commercial agreement (Milestone 4 Phase 5) -----------------------------
+
+/// The shipper's chosen commercial posture, set at create/edit time (DRAFT
+/// only — see Load.commercialMode). PUBLISH_RATE carries a binding
+/// `Load.postedRate`; REQUEST_OFFERS never does. Independent of
+/// LoadAudienceStrategyType (WHO can see the load) — this is WHAT they see
+/// once they can: a posted price, or an invitation to propose one.
+enum LoadCommercialMode {
+  PUBLISH_RATE
+  REQUEST_OFFERS
+}
+
+/// Which action produced round 1 of an OfferThread. CARRIER_OFFER (the
+/// default, and the only value any pre-Phase-5 thread can truthfully have) is
+/// a carrier's own proposal. POSTED_RATE_BOOKING marks a thread synthesized
+/// by Book at Posted Rate — round 1 is proposed by the SHIPPER company (the
+/// published rate), immediately accepted by the carrier in the same
+/// transaction. Never used to fabricate a negotiation that did not happen —
+/// see OffersService#bookAtPostedRate.
+enum OfferThreadOriginType {
+  CARRIER_OFFER
+  POSTED_RATE_BOOKING
+}
+
 // ---------------------------------------------------------------------------
 // Identity & organizations
 // ---------------------------------------------------------------------------
@@ -216,6 +312,20 @@ model Company {
   rateConfirmationsAsShipper RateConfirmation[] @relation("RateConfirmationShipper")
   rateConfirmationsAsCarrier RateConfirmation[] @relation("RateConfirmationCarrier")
 
+  // Relationship network (Milestone 4 Phase 2)
+  followsAsCarrier          CarrierFollow[]        @relation("FollowCarrier")
+  followsAsShipper          CarrierFollow[]        @relation("FollowShipper")
+  connectionsAsCompanyA     CompanyConnection[]    @relation("ConnectionCompanyA")
+  connectionsAsCompanyB     CompanyConnection[]    @relation("ConnectionCompanyB")
+  connectionsInitiated      CompanyConnection[]    @relation("ConnectionRequester")
+  connectionEvents          CompanyConnectionEvent[]
+  preferencesAsShipper      CarrierPreference[]    @relation("PreferenceShipper")
+  preferencesAsCarrier      CarrierPreference[]    @relation("PreferenceCarrier")
+  blocksAsBlocker           CompanyBlock[]         @relation("BlockBlocking")
+  blocksAsBlocked           CompanyBlock[]         @relation("BlockBlocked")
+  carrierGroups             CarrierGroup[]         @relation("CarrierGroupShipper")
+  carrierGroupMemberships   CarrierGroupMember[]   @relation("CarrierGroupMemberCarrier")
+
   @@unique([type, name])
   @@unique([loadNumberPrefix])
   @@index([type])
@@ -245,6 +355,18 @@ model User {
   uploadedDocuments   LoadDocument[]
   documentReviews     DocumentReview[]
 
+  // Relationship network (Milestone 4 Phase 2)
+  connectionsRequested   CompanyConnection[]      @relation("ConnectionRequestedByUser")
+  connectionsRespondedTo CompanyConnection[]      @relation("ConnectionRespondedByUser")
+  connectionEvents       CompanyConnectionEvent[]
+  carrierPreferencesSet  CarrierPreference[]
+  blocksCreated          CompanyBlock[]           @relation("BlockCreatedByUser")
+  blocksRemoved          CompanyBlock[]           @relation("BlockRemovedByUser")
+
+  // Freight audience strategy (Milestone 4 Phase 4)
+  audienceStrategiesCreated LoadAudienceStrategyRecord[]
+  audienceReleasesCreated   LoadAudienceRelease[]
+
   @@map("users")
 }
 
@@ -263,6 +385,10 @@ model Membership {
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  /// Facility scope (Milestone 4 Phase 2). No rows = company-wide access;
+  /// one or more rows = restricted to those Locations only.
+  facilityScope MembershipFacilityScope[]
 
   @@unique([userId, companyId])
   @@index([companyId])
@@ -321,6 +447,10 @@ model Location {
   company     Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
   originLoads Load[]  @relation("LoadOrigin")
   destLoads   Load[]  @relation("LoadDestination")
+
+  /// Facility scope (Milestone 4 Phase 2): memberships restricted to this
+  /// Location as one of their facilities.
+  facilityScopeFor MembershipFacilityScope[]
 
   @@index([companyId, isActive])
   @@index([state, city])
@@ -418,7 +548,20 @@ model Load {
   // offer round's amount. `offeredRate` remains a reserved placeholder (unused).
   offeredRate Decimal? @map("offered_rate") @db.Decimal(14, 2)
   bookedRate  Decimal? @map("booked_rate") @db.Decimal(14, 2)
+  // USD only — a fixed platform-wide invariant (Milestone 4 Phase 5), not a
+  // per-load choice. Retained (rather than removed) purely for backward
+  // compatibility with the existing column/history; every new commercial
+  // write is always "USD" and no input may ever select otherwise.
   currency    String   @default("USD")
+
+  // Commercial agreement (Milestone 4 Phase 5). Set at create/edit time
+  // (DRAFT only, like every other Load field) — never at Review & Post. See
+  // LoadCommercialMode's doc comment. `postedRate` is the shipper's own
+  // binding published USD rate; null unless commercialMode = PUBLISH_RATE.
+  // Never populated from PricingSnapshot/mock pricing — those are a wholly
+  // separate model with no write path into this column.
+  commercialMode LoadCommercialMode @default(REQUEST_OFFERS) @map("commercial_mode")
+  postedRate     Decimal?           @map("posted_rate") @db.Decimal(14, 2)
 
   // Routing results (via RoutingProvider abstraction).
   distanceMeters   Int?      @map("distance_meters")
@@ -458,6 +601,14 @@ model Load {
   checkIns         LoadCheckIn[]
   documents        LoadDocument[]
   rateConfirmation RateConfirmation?
+
+  /// Freight audience strategy (Milestone 4 Phase 4). At most one row — absent
+  /// for every load posted before this feature shipped (see
+  /// LoadAudienceStrategyRecord's doc comment for the historical-compatibility
+  /// rule this null encodes).
+  audienceStrategy LoadAudienceStrategyRecord?
+  audienceMembers  LoadAudienceMember[]
+  audienceReleases LoadAudienceRelease[]
 
   @@index([status])
   @@index([shipperCompanyId, status])
@@ -543,6 +694,9 @@ model OfferThread {
   currentRoundId   String?           @unique @map("current_round_id") @db.Uuid
   closedReason     String?           @map("closed_reason")
   closedAt         DateTime?         @map("closed_at") @db.Timestamptz(6)
+  /// How round 1 originated (Milestone 4 Phase 5). Default CARRIER_OFFER is
+  /// truthful for every historical row — see OfferThreadOriginType.
+  originType       OfferThreadOriginType @default(CARRIER_OFFER) @map("origin_type")
   createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -819,6 +973,366 @@ model RateConfirmation {
   awardedOfferRound OfferRound @relation("RateConfirmationAwardedRound", fields: [awardedOfferRoundId], references: [id], onDelete: Restrict)
 
   @@map("rate_confirmations")
+}
+
+// ---------------------------------------------------------------------------
+// Relationship network + facility scope (Milestone 4 Phase 2)
+//
+// Core invariant: RELATIONSHIP BELONGS TO COMPANY. FREIGHT VISIBILITY BELONGS
+// TO LOAD. None of the models below grant freight access by themselves — they
+// are read by later phases (audience/visibility, search, groups-based
+// selection) as additional inputs, never as a bypass of Load-based access.
+// ---------------------------------------------------------------------------
+
+/// A carrier company's PRIVATE, one-sided bookmark of a shipper company. No
+/// approval, no reverse visibility (the shipper never learns it was
+/// followed), grants no freight access. Hard-deleted on unfollow — this is
+/// not commercial history worth preserving forever, unlike a Connection.
+model CarrierFollow {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  carrierCompanyId String   @map("carrier_company_id") @db.Uuid
+  shipperCompanyId String   @map("shipper_company_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  carrierCompany Company @relation("FollowCarrier", fields: [carrierCompanyId], references: [id], onDelete: Cascade)
+  shipperCompany Company @relation("FollowShipper", fields: [shipperCompanyId], references: [id], onDelete: Cascade)
+
+  @@unique([carrierCompanyId, shipperCompanyId])
+  @@index([shipperCompanyId])
+  @@map("carrier_follows")
+}
+
+/// ONE row per company pair, for the LIFE of that pair — never re-inserted.
+/// `companyAId`/`companyBId` are stored in a DETERMINISTIC canonical order
+/// (companyAId < companyBId, enforced by a CHECK constraint and matched by
+/// `canonicalizeCompanyPair()` in @loadtopia/domain) so a Connection can never
+/// exist twice for the same pair in opposite "directions" — the DB-level
+/// backstop against a duplicate reverse-direction request race.
+///
+/// This row holds CURRENT lifecycle state only (PENDING/ACCEPTED/DECLINED/
+/// DISCONNECTED) and mutates as the relationship evolves, INCLUDING through a
+/// decline/disconnect and back to PENDING on re-request — reconnection is an
+/// UPDATE of this same row, never a new row (see CompanyConnectionEvent for
+/// the immutable full history of every transition this row has ever made).
+model CompanyConnection {
+  id     String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyAId String       @map("company_a_id") @db.Uuid
+  companyBId String       @map("company_b_id") @db.Uuid
+  status ConnectionStatus @default(PENDING)
+
+  /// Always equal to companyAId or companyBId (enforced by CHECK) — who
+  /// currently holds (or most recently held) the "requester" side.
+  requesterCompanyId String   @map("requester_company_id") @db.Uuid
+  requestedByUserId  String   @map("requested_by_user_id") @db.Uuid
+  requestedAt        DateTime @map("requested_at") @db.Timestamptz(6)
+
+  respondedByUserId String?   @map("responded_by_user_id") @db.Uuid
+  respondedAt       DateTime? @map("responded_at") @db.Timestamptz(6)
+
+  /// Set when ACCEPTED -> DISCONNECTED; cleared on a later re-request (the
+  /// row is no longer "currently disconnected" — the historical fact of that
+  /// disconnect lives forever in CompanyConnectionEvent regardless).
+  disconnectedAt DateTime? @map("disconnected_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  companyA          Company                  @relation("ConnectionCompanyA", fields: [companyAId], references: [id], onDelete: Restrict)
+  companyB          Company                  @relation("ConnectionCompanyB", fields: [companyBId], references: [id], onDelete: Restrict)
+  requesterCompany  Company                  @relation("ConnectionRequester", fields: [requesterCompanyId], references: [id], onDelete: Restrict)
+  requestedByUser   User                     @relation("ConnectionRequestedByUser", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  respondedByUser   User?                    @relation("ConnectionRespondedByUser", fields: [respondedByUserId], references: [id], onDelete: SetNull)
+  events            CompanyConnectionEvent[]
+
+  @@unique([companyAId, companyBId])
+  @@index([companyBId])
+  @@index([requesterCompanyId])
+  @@map("company_connections")
+}
+
+/// IMMUTABLE append-only connection lifecycle log — the full truthful history
+/// behind CompanyConnection.status, structurally identical in role to
+/// OfferEvent behind OfferThread.status. A DB trigger (reusing the existing
+/// loadtopia_reject_mutation function) rejects UPDATE/DELETE unconditionally.
+///
+/// No separate RE_REQUESTED type: a REQUESTED event that isn't the first
+/// event for its connectionId is self-evidently a re-request from the
+/// sequence itself — a redundant type would encode nothing an event-history
+/// reader can't already see.
+model CompanyConnectionEvent {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  connectionId   String              @map("connection_id") @db.Uuid
+  type           ConnectionEventType
+  actorUserId    String?             @map("actor_user_id") @db.Uuid
+  actorCompanyId String?             @map("actor_company_id") @db.Uuid
+  data           Json?
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  connection   CompanyConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  actor        User?             @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorCompany Company?          @relation(fields: [actorCompanyId], references: [id], onDelete: SetNull)
+
+  @@index([connectionId, createdAt])
+  @@map("company_connection_events")
+}
+
+/// A shipper company's PRIVATE preference on a carrier company — never a
+/// rating, never public, never exposed to the carrier. Current value is
+/// mutable (upsert semantics); no history table, matching the product spec's
+/// framing of this as an operational note, not commercial/audit history.
+model CarrierPreference {
+  id               String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shipperCompanyId String                @map("shipper_company_id") @db.Uuid
+  carrierCompanyId String                @map("carrier_company_id") @db.Uuid
+  preference       CarrierPreferenceType
+  setByUserId      String                @map("set_by_user_id") @db.Uuid
+  createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  shipperCompany Company @relation("PreferenceShipper", fields: [shipperCompanyId], references: [id], onDelete: Cascade)
+  carrierCompany Company @relation("PreferenceCarrier", fields: [carrierCompanyId], references: [id], onDelete: Cascade)
+  setByUser      User    @relation(fields: [setByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([shipperCompanyId, carrierCompanyId])
+  @@index([carrierCompanyId])
+  @@map("carrier_preferences")
+}
+
+/// ONE row per block "episode" — PRIVATE to the blocking company; the blocked
+/// company is never notified and never sees this row. Unblocking moves this
+/// SAME row to INACTIVE (history preserved, never deleted); a LATER re-block
+/// between the same two companies in the same direction gets a NEW row (the
+/// partial unique index below only forbids more than one CURRENTLY-in-force
+/// row per direction — the same pattern as offer_threads_one_accepted_per_load).
+/// Blocking is directional: A blocking B is a separate fact from B blocking A.
+model CompanyBlock {
+  id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  blockingCompanyId String             @map("blocking_company_id") @db.Uuid
+  blockedCompanyId  String             @map("blocked_company_id") @db.Uuid
+  status            CompanyBlockStatus @default(ACTIVE)
+
+  createdByUserId String    @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// When the block actually took/takes effect for future-interaction
+  /// purposes: immediately for ACTIVE, or the moment a PENDING_ON_COMPLETION
+  /// episode resolves to ACTIVE once the freight that was keeping it pending
+  /// ends.
+  effectiveAt     DateTime? @map("effective_at") @db.Timestamptz(6)
+
+  removedByUserId String?   @map("removed_by_user_id") @db.Uuid
+  removedAt       DateTime? @map("removed_at") @db.Timestamptz(6)
+
+  blockingCompany Company @relation("BlockBlocking", fields: [blockingCompanyId], references: [id], onDelete: Restrict)
+  blockedCompany  Company @relation("BlockBlocked", fields: [blockedCompanyId], references: [id], onDelete: Restrict)
+  createdByUser   User    @relation("BlockCreatedByUser", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  removedByUser   User?   @relation("BlockRemovedByUser", fields: [removedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([blockingCompanyId, status])
+  @@index([blockedCompanyId, status])
+  @@map("company_blocks")
+}
+
+/// A shipper company's PRIVATE, manual collection of its own connected
+/// carriers (e.g. "Texas Dry Van", "Backup Capacity"). The carrier never sees
+/// the group's name or its own membership in it. `normalizedName` (trimmed,
+/// lower-cased at the application layer) backs a case-insensitive-equivalent
+/// uniqueness constraint without requiring the citext extension.
+model CarrierGroup {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shipperCompanyId String   @map("shipper_company_id") @db.Uuid
+  name             String
+  normalizedName   String   @map("normalized_name")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  shipperCompany Company              @relation("CarrierGroupShipper", fields: [shipperCompanyId], references: [id], onDelete: Cascade)
+  members        CarrierGroupMember[]
+
+  @@unique([shipperCompanyId, normalizedName])
+  @@map("carrier_groups")
+}
+
+/// Join of CarrierGroup <-> carrier Company. Removing a member does not
+/// disconnect the carrier; deleting the group (Cascade) does not either —
+/// group membership is not commercial history, unlike a Connection.
+model CarrierGroupMember {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId          String   @map("group_id") @db.Uuid
+  carrierCompanyId String   @map("carrier_company_id") @db.Uuid
+  addedAt          DateTime @default(now()) @map("added_at") @db.Timestamptz(6)
+
+  group          CarrierGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  carrierCompany Company      @relation("CarrierGroupMemberCarrier", fields: [carrierCompanyId], references: [id], onDelete: Restrict)
+
+  @@unique([groupId, carrierCompanyId])
+  @@index([carrierCompanyId])
+  @@map("carrier_group_members")
+}
+
+// ---------------------------------------------------------------------------
+// Freight audience strategy (Milestone 4 Phase 4)
+//
+// Core invariant: the SAME Load broadens over time — these rows never cause a
+// clone/replacement Load, never touch offers, and never rewrite the load
+// state machine. `LoadAudienceStrategyRecord.currentStage` is the single
+// authoritative "how far has this load's audience widened" pointer; visibility
+// composes it with the UNCHANGED marketplace eligibility rules from Milestone 2
+// (see packages/domain/src/audience/audience-visibility.ts).
+//
+// Historical compatibility: a Load with NO `LoadAudienceStrategyRecord` row is
+// a pre-Phase-4 posted load — it behaves exactly as it always did (full
+// marketplace visibility to every eligible carrier, no audience restriction).
+// This row is created ONCE, at Review & Post, for every load posted from this
+// feature forward, and is never backfilled onto historical loads.
+// ---------------------------------------------------------------------------
+
+/// One row per Load (created at Review & Post), for the life of that Load.
+/// The strategy CHOICE is immutable; `currentStage` advances forward-only as
+/// releases execute — this is what lets the SAME Load broaden its audience
+/// without ever being cloned or reposted.
+model LoadAudienceStrategyRecord {
+  id                  String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId              String                    @unique @map("load_id") @db.Uuid
+  strategy            LoadAudienceStrategyType
+  /// The visibility boundary currently in effect. Starts at SELECTED
+  /// (Selected Carriers First), NETWORK (Network First), or MARKETPLACE
+  /// (Marketplace) depending on `strategy`, and only ever moves forward.
+  currentStage        LoadAudienceStage         @map("current_stage")
+  /// True once the shipper has explicitly turned off further automatic
+  /// widening for the CURRENT stage (set at posting when "Don't release
+  /// automatically" is chosen, or by an explicit cancel of a pending
+  /// release). Release Now remains available regardless.
+  autoReleaseDisabled Boolean                   @default(false) @map("auto_release_disabled")
+  createdByUserId     String                    @map("created_by_user_id") @db.Uuid
+  createdAt           DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  load          Load                  @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  createdByUser User                  @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  members       LoadAudienceMember[]
+  releases      LoadAudienceRelease[]
+
+  @@index([currentStage])
+  @@map("load_audience_strategies")
+}
+
+/// A concrete, frozen audience-member snapshot for a PRIVATE stage (SELECTED
+/// or NETWORK — never MARKETPLACE, which stays open to all otherwise-eligible
+/// carriers and needs no finite snapshot). `stage` records WHICH stage this
+/// row was captured for, since a load's audience can be snapshotted TWICE
+/// over its life: once for SELECTED (at Review & Post, for a Selected
+/// Carriers First load) and again for NETWORK (at Review & Post for a
+/// Network First load, OR at the moment a SELECTED -> NETWORK release
+/// actually executes) — a carrier may legitimately appear in BOTH a SELECTED
+/// row and a later, separate NETWORK row for the same load; these are
+/// distinct historical facts and are never merged or overwritten.
+///
+/// This snapshot is HISTORICAL TRUTH ("this carrier was in the audience when
+/// this stage was established"), never permanent authorization by itself —
+/// current visibility additionally requires a live ACCEPTED Connection and no
+/// in-force Block (see isCarrierInAudience). Editing a Carrier Group later,
+/// a carrier disconnecting, or new connections forming never mutates this
+/// row. `sourceGroupId` is optional provenance for display/audit only (only
+/// ever set for a SELECTED-stage row sourced from a group) — it is NEVER
+/// read as an authorization source (see NetworkGroupsService et al.: "do not
+/// store only a dynamic group reference as the authorization mechanism").
+model LoadAudienceMember {
+  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId           String            @map("load_id") @db.Uuid
+  strategyId       String            @map("strategy_id") @db.Uuid
+  stage            LoadAudienceStage
+  carrierCompanyId String            @map("carrier_company_id") @db.Uuid
+  /// Provenance only, nullable (a carrier may have been picked individually,
+  /// not via a group; always null for a NETWORK-stage row). No FK — the
+  /// source group may be renamed or deleted later without touching this
+  /// immutable snapshot.
+  sourceGroupId    String?           @map("source_group_id") @db.Uuid
+  sourceGroupName  String?           @map("source_group_name")
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  load     Load                       @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  strategy LoadAudienceStrategyRecord @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+
+  // Powers the carrier-visibility query directly off Load (no join through
+  // the strategy needed for "am I a member of this load's CURRENT stage").
+  @@unique([loadId, stage, carrierCompanyId])
+  @@index([carrierCompanyId])
+  @@map("load_audience_members")
+}
+
+/// One row per scheduled (or manually executed) audience-widening action.
+/// DB-backed source of truth for the release engine — see
+/// apps/api/src/modules/loads/release-engine.ts.
+///
+/// `fromStage` is the exact stage the strategy's `currentStage` MUST equal
+/// for this release to be valid to execute — the database-enforced ordering
+/// mechanism for a chained release (e.g. SELECTED -> NETWORK, then a second
+/// row NETWORK -> MARKETPLACE). Derived once at creation from the chain
+/// position (the strategy's own starting stage for the first hop, or the
+/// previous hop's `toStage` for a later one) — never re-derived from process-
+/// local state, poll timing, or row order, so correctness does not depend on
+/// a single poller instance or `findMany` ordering.
+///
+/// A row is claimed via `SELECT ... FOR UPDATE` on this specific row inside
+/// the execution transaction (see executeOneRelease): this is safe under
+/// multiple concurrent API instances / duplicate polls — a second claimant
+/// blocks until the first commits, then re-reads `status` and no-ops. If the
+/// authoritative `currentStage` does not yet equal `fromStage` (the
+/// predecessor hop has not executed), the row is left PENDING and retried by
+/// a later poll — it is never permanently consumed or cancelled just because
+/// it was attempted early.
+model LoadAudienceRelease {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loadId          String            @map("load_id") @db.Uuid
+  strategyId      String            @map("strategy_id") @db.Uuid
+  /// The stage the strategy's currentStage must equal for this release to
+  /// be valid to execute.
+  fromStage       LoadAudienceStage @map("from_stage")
+  /// The stage this release, once executed, advances the load TO.
+  toStage         LoadAudienceStage @map("to_stage")
+  status          LoadReleaseStatus @default(PENDING)
+  scheduledAt     DateTime          @map("scheduled_at") @db.Timestamptz(6)
+  executedAt      DateTime?         @map("executed_at") @db.Timestamptz(6)
+  cancelledAt     DateTime?         @map("cancelled_at") @db.Timestamptz(6)
+  /// Present only when status = CANCELLED — distinguishes an explicit shipper
+  /// cancellation from one superseded by a manual Release Now, or one that
+  /// never got the chance to apply because the load became covered/ineligible.
+  cancelReason    String?           @map("cancel_reason")
+  createdByUserId String            @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  load          Load                       @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  strategy      LoadAudienceStrategyRecord @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  createdByUser User                       @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  // The release engine's poll query: claim due, still-pending releases.
+  @@index([status, scheduledAt])
+  @@index([loadId])
+  @@map("load_audience_releases")
+}
+
+/// Facility scope (Milestone 4 Phase 2): an ADDITIONAL restriction layered on
+/// top of role/permission, never a replacement for it. A membership with NO
+/// rows here has company-wide access (the default, and the only state a
+/// single-location company ever needs); one or more rows restrict that
+/// membership to acting only where a matching Location is the origin or
+/// destination. Both membershipId and locationId must belong to the SAME
+/// company — the database cannot express that cross-table invariant via FK
+/// alone, so it is enforced in the service layer inside a transaction (see
+/// FacilityScopeService) and covered by an integration test.
+model MembershipFacilityScope {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  membershipId String   @map("membership_id") @db.Uuid
+  locationId   String   @map("location_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  location   Location   @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  @@unique([membershipId, locationId])
+  @@index([locationId])
+  @@map("membership_facility_scope")
 }
 
 // ---------------------------------------------------------------------------

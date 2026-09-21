@@ -1,22 +1,13 @@
 import Link from "next/link";
 import type { OfferThreadSummary, Paginated } from "@loadtopia/shared";
 import { apiServer } from "@/lib/api-server";
-import { Badge, Card, EmptyState, PageHeader } from "@/components/ui";
-import { fmtDateTime, titleCase } from "@/lib/format";
+import { Badge, EmptyState, PageHeader } from "@/components/ui";
+import { OfferCard, isMyOfferMove } from "@/components/marketplace/offer-card";
+import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from "@/components/table";
+import { fmtDateTime, fmtMoney, titleCase } from "@/lib/format";
+import { OFFER_THREAD_STATUS_TONE } from "@/lib/status-tone";
 
 export const dynamic = "force-dynamic";
-
-const TONE: Record<string, "gray" | "green" | "amber" | "red" | "indigo"> = {
-  ACTIVE: "amber",
-  ACCEPTED: "green",
-  REJECTED: "red",
-  WITHDRAWN: "gray",
-  EXPIRED: "gray",
-};
-
-function money(v: string | null, currency = "USD") {
-  return v == null ? "—" : new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(v));
-}
 
 export default async function MyOffersPage({
   searchParams,
@@ -44,50 +35,55 @@ export default async function MyOffersPage({
           }
         />
       ) : (
-        <Card className="overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-canvas text-left text-xs uppercase tracking-wide text-muted">
+        <>
+          <div className="hidden md:block">
+            <Table>
+              <TableHead>
                 <tr>
-                  <th className="px-4 py-2.5 font-medium">Load</th>
-                  <th className="px-4 py-2.5 font-medium">Current amount</th>
-                  <th className="px-4 py-2.5 font-medium">Rounds</th>
-                  <th className="px-4 py-2.5 font-medium">Updated</th>
-                  <th className="px-4 py-2.5 font-medium">Status</th>
+                  <TableHeaderCell>Load</TableHeaderCell>
+                  <TableHeaderCell>Lane</TableHeaderCell>
+                  <TableHeaderCell>Current amount</TableHeaderCell>
+                  <TableHeaderCell>Rounds</TableHeaderCell>
+                  <TableHeaderCell>Updated</TableHeaderCell>
+                  <TableHeaderCell>Status</TableHeaderCell>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-line">
+              </TableHead>
+              <TableBody>
                 {result.data.map((t) => (
-                  <tr key={t.threadId} className="hover:bg-canvas">
-                    <td className="whitespace-nowrap px-4 py-3 font-medium">
-                      <Link
-                        href={`/marketplace/${t.loadId}`}
-                        className="text-brand-600 hover:underline"
-                      >
-                        View load
+                  <TableRow key={t.threadId}>
+                    <TableCell className="whitespace-nowrap font-medium">
+                      <Link href={`/marketplace/${t.loadId}`} className="text-brand-600 hover:underline">
+                        {t.load.referenceNumber}
                       </Link>
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3">
-                      {money(t.currentAmount, t.currentCurrency)}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-muted">{t.roundCount}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-muted">
-                      {fmtDateTime(t.updatedAt)}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3">
-                      <Badge tone={TONE[t.status] ?? "gray"}>{titleCase(t.status)}</Badge>
-                      {t.awaitingMyResponse && t.status === "ACTIVE" && (
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      {t.load.origin.city}, {t.load.origin.state} → {t.load.destination.city},{" "}
+                      {t.load.destination.state}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      {fmtMoney(t.currentAmount, t.currentCurrency)}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-muted">{t.roundCount}</TableCell>
+                    <TableCell className="whitespace-nowrap text-muted">{fmtDateTime(t.updatedAt)}</TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      <Badge tone={OFFER_THREAD_STATUS_TONE[t.status]}>{titleCase(t.status)}</Badge>
+                      {isMyOfferMove(t) && (
                         <span className="ml-1">
                           <Badge tone="indigo">Your move</Badge>
                         </span>
                       )}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
-        </Card>
+          <div className="space-y-3 md:hidden">
+            {result.data.map((t) => (
+              <OfferCard key={t.threadId} t={t} />
+            ))}
+          </div>
+        </>
       )}
 
       {result.totalPages > 1 && (

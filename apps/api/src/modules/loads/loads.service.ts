@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@loadtopia/db";
 import {
+  ACTIVE_FREIGHT_STATUSES,
   assertCanModifyLoad,
   assertCanOperateShipment,
   assertCanReadLoad,
@@ -7,36 +8,70 @@ import {
   assertPermission,
   assertPostReadiness,
   assertLoadWindows,
+  assertValidCommercialMode,
   buildLoadCreatedEvent,
   buildLoadUpdatedEvent,
   canCancelLoad,
   formatLoadNumber,
   loadViewerRole,
   Permission,
+  SHIPMENT_LOAD_STATUSES,
   type LoadEventDraft,
 } from "@loadtopia/domain";
 import { MOCK_PROVIDER_NAME, type ProviderRegistry } from "@loadtopia/providers";
 import {
+  type AudiencePreviewInput,
   type AuthenticatedActor,
+  type CoverageGroup,
   type CreateLoadInput,
   type ListLoadsQuery,
   LoadStatus,
   type LoadListItem,
+  type Pagination,
+  type PostLoadAudienceInput,
   type LoadView,
   type Paginated,
+  type ShipmentListItem,
   type UpdateLoadInput,
 } from "@loadtopia/shared";
 import { AppError, badRequest, conflict, notFound } from "../../lib/errors";
+import { enforceLoadFacilityScope, loadFacilityScopeWhere } from "../../lib/facility-scope";
 import { appendLoadEvent, atomicLoadTransition } from "../../lib/load-lifecycle";
 import { paginate, toSkipTake } from "../../lib/pagination";
+import { toDecimal } from "../../lib/money";
+import { BlocksService } from "../network/blocks.service";
 import { PricingService } from "../pricing/pricing.service";
-import { loadDetailInclude, loadListInclude, toLoadListItem, toLoadView } from "./loads.serializer";
+import { AudienceService } from "./audience.service";
+import { cancelPendingReleases } from "./release-engine";
+import {
+  loadDetailInclude,
+  loadListInclude,
+  shipmentListInclude,
+  toLoadListItem,
+  toLoadView,
+  toShipmentListItem,
+} from "./loads.serializer";
 import { computeRouting } from "./routing";
 
 const parseDate = (v: string | null | undefined): Date | null => (v == null ? null : new Date(v));
 
+/**
+ * Coverage grouping (Milestone 4 Phase 10) — a pure read/filter mapping over
+ * the existing LoadStatus state machine, never a new status or a DB column.
+ * COVERED reuses ACTIVE_FREIGHT_STATUSES verbatim (the same domain constant
+ * Phase 9's block-continuity logic uses) — its semantics already match
+ * exactly (AWARDED..DELIVERED, explicitly excluding COMPLETED).
+ */
+const COVERAGE_GROUP_STATUSES: Record<CoverageGroup, readonly LoadStatus[]> = {
+  DRAFT: [LoadStatus.DRAFT],
+  NEEDS_COVERAGE: [LoadStatus.POSTED, LoadStatus.OFFER_RECEIVED],
+  COVERED: ACTIVE_FREIGHT_STATUSES,
+};
+
 export class LoadsService {
   private readonly pricing: PricingService;
+  private readonly audience: AudienceService;
+  private readonly blocks: BlocksService;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -44,6 +79,32 @@ export class LoadsService {
     private readonly log: { warn: (obj: unknown, msg: string) => void },
   ) {
     this.pricing = new PricingService(prisma, providers.pricing);
+    this.audience = new AudienceService(prisma);
+    this.blocks = new BlocksService(prisma);
+  }
+
+  /**
+   * Milestone 4 Phase 9 — best-effort, post-commit continuity recheck. Called
+   * only after a freight transition that can end "active shared freight"
+   * between the shipper and carrier (shipment completion, or cancellation of
+   * an already-awarded load) has ITSELF already committed. Deliberately
+   * NEVER allowed to fail the caller: an infrastructure hiccup in the block
+   * subsystem must not roll back or error out an otherwise-successful
+   * completion/cancellation — the freight transition remains authoritative.
+   * A skipped/failed recheck here is not a correctness loss: it is retried
+   * the next time either company's active-freight set changes again, or via
+   * the existing manual NETWORK_MANAGE recheck endpoint.
+   */
+  private async recheckBlockContinuityAfterFreightChange(
+    shipperCompanyId: string,
+    carrierCompanyId: string | null,
+  ): Promise<void> {
+    if (!carrierCompanyId) return; // no awarded carrier -> no pair to recheck
+    try {
+      await this.blocks.recheckContinuityForCompanyPair(shipperCompanyId, carrierCompanyId);
+    } catch (err) {
+      this.log.warn({ err, shipperCompanyId, carrierCompanyId }, "block continuity recheck failed");
+    }
   }
 
   private async loadDetail(id: string, actor: AuthenticatedActor): Promise<LoadView> {
@@ -51,8 +112,13 @@ export class LoadsService {
       where: { id },
       include: loadDetailInclude,
     });
-    // `availableTransitions` is actor-aware — see loads.serializer.
-    return toLoadView(row, loadViewerRole(actor, row));
+    // `availableTransitions` is actor-aware — see loads.serializer. Audience
+    // counts (both SELECTED and NETWORK) now come from the frozen snapshot
+    // already in `row.audienceMembers` — no live network query needed here
+    // (review correction #2: NETWORK membership is snapshotted, not live).
+    // `actor.companyId` drives timeline privacy redaction (Phase 6) — see
+    // toEventView's doc comment.
+    return toLoadView(row, loadViewerRole(actor, row), actor.companyId);
   }
 
   // -- create --------------------------------------------------------------
@@ -68,6 +134,13 @@ export class LoadsService {
       pickupWindowEnd: input.pickupWindowEnd,
       deliveryWindowStart: input.deliveryWindowStart,
       deliveryWindowEnd: input.deliveryWindowEnd,
+    });
+    // Commercial agreement (Milestone 4 Phase 5): USD-only is enforced by the
+    // schema (positiveMoneySchema/currencySchema never accept anything else);
+    // this is the cross-field rule the schema alone cannot express.
+    assertValidCommercialMode({
+      commercialMode: input.commercialMode,
+      postedRate: input.postedRate ?? null,
     });
 
     const locations = await this.requireOwnedLocations(companyId, [
@@ -116,6 +189,8 @@ export class LoadsService {
           driveTimeMinutes: routing?.driveTimeMinutes ?? null,
           routingProvider: routing?.provider ?? null,
           routedAt: routing?.routedAt ?? null,
+          commercialMode: input.commercialMode,
+          postedRate: input.postedRate != null ? toDecimal(input.postedRate) : null,
         },
       });
 
@@ -141,9 +216,23 @@ export class LoadsService {
     q: ListLoadsQuery,
   ): Promise<Paginated<LoadListItem>> {
     assertPermission(actor, Permission.LOAD_READ_OWN);
+    // Facility scope (Milestone 4 Phase 7): pushed into the query, not filtered
+    // in memory — a company-wide membership gets `undefined` (no restriction).
+    const facilityScope = await loadFacilityScopeWhere(this.prisma, actor);
+    // Coverage group (Milestone 4 Phase 10) and the precise `status` filter
+    // compose via AND, never one overriding the other — e.g.
+    // group=NEEDS_COVERAGE&status=POSTED narrows to POSTED only;
+    // group=COVERED&status=POSTED (incompatible) yields zero rows. Combined
+    // into ONE `AND` array alongside facility scope, since a Prisma `where`
+    // may only carry one top-level `OR`/`AND` key per level.
+    const conditions: Prisma.LoadWhereInput[] = [
+      ...(q.status ? [{ status: q.status }] : []),
+      ...(q.group ? [{ status: { in: [...COVERAGE_GROUP_STATUSES[q.group]] } }] : []),
+      ...(facilityScope ? [facilityScope] : []),
+    ];
     const where: Prisma.LoadWhereInput = {
       shipperCompanyId: companyId,
-      ...(q.status ? { status: q.status } : {}),
+      ...(conditions.length > 0 ? { AND: conditions } : {}),
     };
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.load.findMany({
@@ -157,13 +246,66 @@ export class LoadsService {
     return paginate(rows.map(toLoadListItem), total, q);
   }
 
+  /**
+   * Shipper "Shipments" workspace (Milestone 4 Phase 5, §21-22) — the SAME
+   * Load rows as {@link list}, filtered to the shipment lifecycle
+   * (SHIPMENT_LOAD_STATUSES: AWARDED through COMPLETED) plus a load that was
+   * cancelled AFTER being awarded (it was, briefly or otherwise, a real
+   * shipment — its cancellation is still shipment history, not pre-coverage
+   * history). No new table, no new query shape beyond the existing
+   * `[shipperCompanyId, status]` index already used by {@link list}.
+   */
+  async listShipments(
+    actor: AuthenticatedActor,
+    companyId: string,
+    q: Pagination,
+  ): Promise<Paginated<ShipmentListItem>> {
+    assertPermission(actor, Permission.LOAD_READ_OWN);
+    // Facility scope (Milestone 4 Phase 7): a second `OR` clause combined via
+    // `AND` alongside the existing shipment-status `OR` — a `where` object may
+    // only carry one top-level `OR` key.
+    const facilityScope = await loadFacilityScopeWhere(this.prisma, actor);
+    const where: Prisma.LoadWhereInput = {
+      shipperCompanyId: companyId,
+      AND: [
+        {
+          OR: [
+            { status: { in: [...SHIPMENT_LOAD_STATUSES] } },
+            { status: LoadStatus.CANCELLED, carrierCompanyId: { not: null } },
+          ],
+        },
+        ...(facilityScope ? [facilityScope] : []),
+      ],
+    };
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.load.findMany({
+        where,
+        include: shipmentListInclude,
+        orderBy: { updatedAt: "desc" },
+        ...toSkipTake(q),
+      }),
+      this.prisma.load.count({ where }),
+    ]);
+    return paginate(
+      rows.map((r) => toShipmentListItem(r, "shipper")),
+      total,
+      q,
+    );
+  }
+
   async getById(actor: AuthenticatedActor, id: string): Promise<LoadView> {
     const load = await this.prisma.load.findUnique({
       where: { id },
-      select: { shipperCompanyId: true, carrierCompanyId: true },
+      select: {
+        shipperCompanyId: true,
+        carrierCompanyId: true,
+        originLocationId: true,
+        destinationLocationId: true,
+      },
     });
     if (!load) throw notFound("Load not found");
     assertCanReadLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     return this.loadDetail(id, actor);
   }
 
@@ -172,6 +314,7 @@ export class LoadsService {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_UPDATE_OWN);
 
     if (load.status !== LoadStatus.DRAFT) {
@@ -198,12 +341,26 @@ export class LoadsService {
         input.deliveryWindowEnd === undefined
           ? load.deliveryWindowEnd
           : parseDate(input.deliveryWindowEnd),
+      commercialMode: input.commercialMode ?? load.commercialMode,
+      postedRate:
+        input.postedRate === undefined
+          ? load.postedRate
+          : input.postedRate === null
+            ? null
+            : toDecimal(input.postedRate),
     };
 
     if (merged.originLocationId === merged.destinationLocationId) {
       throw badRequest("origin and destination must be different");
     }
     assertLoadWindows(merged);
+    // Commercial agreement (Milestone 4 Phase 5): validated against the
+    // MERGED state — a patch that only touches one of the two fields must
+    // still be consistent with whichever value it did not resend.
+    assertValidCommercialMode({
+      commercialMode: merged.commercialMode,
+      postedRate: merged.postedRate?.toFixed(2) ?? null,
+    });
 
     const locChanged =
       input.originLocationId !== undefined || input.destinationLocationId !== undefined;
@@ -272,6 +429,10 @@ export class LoadsService {
             ? { deliveryWindowEnd: parseDate(input.deliveryWindowEnd) }
             : {}),
           ...routingData,
+          ...(input.commercialMode !== undefined ? { commercialMode: input.commercialMode } : {}),
+          ...(input.postedRate !== undefined
+            ? { postedRate: input.postedRate === null ? null : toDecimal(input.postedRate) }
+            : {}),
           updatedByUserId: actor.userId,
         },
       });
@@ -294,6 +455,7 @@ export class LoadsService {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_DELETE_OWN);
 
     if (load.status !== LoadStatus.DRAFT) {
@@ -308,11 +470,29 @@ export class LoadsService {
     });
   }
 
+  /** Non-authoritative Review & Post preview — see AudienceService#preview. */
+  async previewAudience(actor: AuthenticatedActor, id: string, input: AudiencePreviewInput) {
+    return this.audience.preview(actor, id, input);
+  }
+
   // -- lifecycle transitions --------------------------------------------
-  async post(actor: AuthenticatedActor, id: string): Promise<LoadView> {
+  /**
+   * Review & Post: DRAFT -> POSTED plus the shipper's audience strategy,
+   * applied atomically in one transaction (§17). `input` defaults to
+   * `{ strategy: "MARKETPLACE" }` at the route layer when the request body
+   * is omitted — the exact historical immediate-post behavior — so this
+   * stays backward compatible while the web Review & Post flow always sends
+   * an explicit choice.
+   */
+  async post(
+    actor: AuthenticatedActor,
+    id: string,
+    input: PostLoadAudienceInput,
+  ): Promise<LoadView> {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_POST);
 
     const routingIsMock = this.providers.routing.isMock;
@@ -374,14 +554,28 @@ export class LoadsService {
         );
       }
 
+      const now = new Date();
       await atomicLoadTransition(tx, {
         id,
         from: fresh.status,
         to: LoadStatus.POSTED,
         actorUserId: actor.userId,
         actorCompanyId: actor.companyId,
-        extra: { postedAt: new Date() },
+        extra: { postedAt: now },
       });
+
+      // Audience strategy is resolved and persisted in this SAME transaction,
+      // under the SAME row lock — a validation failure here (e.g. an empty
+      // Selected/Network audience) rolls back the whole POST, leaving the
+      // load in DRAFT with no partial audience state (§17).
+      await this.audience.applyAudienceAtPosting(
+        tx,
+        actor,
+        id,
+        fresh.shipperCompanyId,
+        input,
+        now,
+      );
     });
 
     // Capture an immutable pricing snapshot at post time so the price the
@@ -415,13 +609,22 @@ export class LoadsService {
   }
 
   /**
-   * `AWARDED → CARRIER_ASSIGNED`. The shipper confirms the awarded carrier is
-   * assigned to run the load. (The carrier was set atomically at award time.)
+   * `AWARDED → CARRIER_ASSIGNED`. LEGACY / RECOVERY PATH ONLY (Milestone 4
+   * Phase 5, §15): every NEW commercial acceptance — negotiated or booked —
+   * now performs this same transition automatically, in the same
+   * transaction as the award itself (see OffersService#executeCommercialAcceptance).
+   * A Phase-5 load never rests at AWARDED, so this endpoint can only ever
+   * legally apply to a load that reached AWARDED before automatic assignment
+   * existed. No separate "is this legacy" flag is introduced — the load's
+   * own authoritative status (still AWARDED, not yet CARRIER_ASSIGNED) IS
+   * the truthful signal; nothing is fabricated or backfilled. Retained, not
+   * deleted, and not wired into the new product workflow's UI.
    */
   async assign(actor: AuthenticatedActor, id: string): Promise<LoadView> {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_UPDATE_OWN);
 
     assertLoadTransition(load.status, LoadStatus.CARRIER_ASSIGNED);
@@ -543,6 +746,7 @@ export class LoadsService {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_UPDATE_OWN);
 
     await this.prisma.$transaction(async (tx) => {
@@ -583,6 +787,12 @@ export class LoadsService {
       });
     });
 
+    // Completion just ended this load's "active shared freight" window —
+    // re-evaluate any PENDING_ON_COMPLETION block between the pair. Runs
+    // only after the transaction above has committed; never allowed to
+    // fail this call (see recheckBlockContinuityAfterFreightChange).
+    await this.recheckBlockContinuityAfterFreightChange(load.shipperCompanyId, load.carrierCompanyId);
+
     return this.loadDetail(id, actor);
   }
 
@@ -590,6 +800,7 @@ export class LoadsService {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_UPDATE_OWN);
 
     assertLoadTransition(load.status, LoadStatus.DRAFT);
@@ -608,20 +819,33 @@ export class LoadsService {
     const load = await this.prisma.load.findUnique({ where: { id } });
     if (!load) throw notFound("Load not found");
     assertCanModifyLoad(actor, load);
+    await enforceLoadFacilityScope(this.prisma, actor, load);
     assertPermission(actor, Permission.LOAD_CANCEL_OWN);
 
     if (!canCancelLoad(load.status)) {
       assertLoadTransition(load.status, LoadStatus.CANCELLED); // throws a precise error
     }
-    await this.transition(
-      id,
-      load.status,
-      LoadStatus.CANCELLED,
-      actor.userId,
-      actor.companyId,
-      { cancelledAt: new Date() },
-      reason,
-    );
+    await this.prisma.$transaction(async (tx) => {
+      await atomicLoadTransition(tx, {
+        id,
+        from: load.status,
+        to: LoadStatus.CANCELLED,
+        actorUserId: actor.userId,
+        actorCompanyId: actor.companyId,
+        extra: { cancelledAt: new Date() },
+        note: reason,
+      });
+      // A cancelled load must never widen its audience later — cancel any
+      // pending scheduled release in the SAME transaction (§7).
+      await cancelPendingReleases(tx, id, "load_cancelled", actor.userId, actor.companyId);
+    });
+
+    // Cancelling an AWARDED/CARRIER_ASSIGNED load ends "active shared
+    // freight" with that carrier just like completion does — re-evaluate
+    // continuity the same way. A no-op (carrierCompanyId is null) for a
+    // pre-award cancellation, since no specific carrier pairing exists yet.
+    await this.recheckBlockContinuityAfterFreightChange(load.shipperCompanyId, load.carrierCompanyId);
+
     return this.loadDetail(id, actor);
   }
 

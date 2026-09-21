@@ -9,6 +9,7 @@ import {
 } from "@loadtopia/domain";
 import type { AuthenticatedActor, CheckInView, CreateCheckInInput } from "@loadtopia/shared";
 import { conflict, notFound } from "../../lib/errors";
+import { enforceLoadFacilityScope } from "../../lib/facility-scope";
 import { appendLoadEvent } from "../../lib/load-lifecycle";
 import { toCheckInView } from "./check-ins.serializer";
 
@@ -32,10 +33,18 @@ export class CheckInsService {
   async list(actor: AuthenticatedActor, loadId: string): Promise<CheckInView[]> {
     const load = await this.prisma.load.findUnique({
       where: { id: loadId },
-      select: { shipperCompanyId: true, carrierCompanyId: true },
+      select: {
+        shipperCompanyId: true,
+        carrierCompanyId: true,
+        originLocationId: true,
+        destinationLocationId: true,
+      },
     });
     if (!load) throw notFound("Load not found");
     assertCanReadLoad(actor, load); // 404 for anyone outside the load's scope
+    // Facility scope (Milestone 4 Phase 7): shipper-side read only — a no-op
+    // for the assigned carrier reading its own operational check-ins.
+    await enforceLoadFacilityScope(this.prisma, actor, load);
 
     const rows = await this.prisma.loadCheckIn.findMany({
       where: { loadId },

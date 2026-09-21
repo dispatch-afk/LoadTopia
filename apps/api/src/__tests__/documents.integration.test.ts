@@ -112,7 +112,7 @@ suite("operational documents (integration)", () => {
         url: `/api/offers/rounds/${offer.json().rounds[0].id}/accept`,
       }),
     );
-    await api.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }));
+    // Milestone 4 Phase 5: acceptance already auto-assigned — no /assign call.
     return loadId;
   }
 
@@ -206,7 +206,9 @@ suite("operational documents (integration)", () => {
     const c = await carrier();
     const loadId = await assignedLoad(s, c);
 
-    // AWARDED: roll the load back via a fresh un-assigned load
+    // AWARDED (not yet assigned): Milestone 4 Phase 5 auto-assigns on
+    // acceptance, so this window is only reachable as a legacy/historical
+    // row — constructed directly here.
     const s2 = await shipper("Two");
     const c2 = await carrier("Two Co");
     const draft = await api.inject(
@@ -236,12 +238,16 @@ suite("operational documents (integration)", () => {
         payload: { amount: "100.00", currency: "USD" },
       }),
     );
-    await api.inject(
-      authed(s2.cookie, {
-        method: "POST",
-        url: `/api/offers/rounds/${offer.json().rounds[0].id}/accept`,
-      }),
-    );
+    await prisma.load.update({
+      where: { id: awardedId },
+      data: {
+        status: "AWARDED",
+        carrierCompanyId: c2.companyId,
+        awardedOfferRoundId: offer.json().rounds[0].id,
+        bookedRate: "100.00",
+        awardedAt: new Date(),
+      },
+    });
     expect((await reqUpload(c2.cookie, awardedId, POD())).statusCode).toBe(403); // AWARDED, carrier not operational
 
     // COMPLETED (forced): frozen

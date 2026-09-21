@@ -1,10 +1,15 @@
 import type { RateConfirmationView } from "@loadtopia/shared";
-import { fmtDateTime, titleCase } from "@/lib/format";
+import { fmtDateTime, fmtMoney, titleCase } from "@/lib/format";
 import { RateConfirmationDownload } from "./rate-confirmation-download";
 
-function money(v: string, currency: string) {
-  return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(v));
-}
+/** Factual agreement-origin label (Milestone 4 Phase 6) — mirrors the
+ *  "Booked at posted rate" badge already used on `OfferThread`. Derived
+ *  read-only from the awarded OfferRound's thread; never implies a
+ *  negotiation that did not happen. */
+const AGREEMENT_SOURCE_LABEL: Record<RateConfirmationView["agreementSource"], string> = {
+  POSTED_RATE_BOOKING: "Booked at posted rate",
+  CARRIER_OFFER: "Negotiated offer",
+};
 
 /**
  * Rate Confirmation section. `state` is the backend's truth:
@@ -38,11 +43,17 @@ export function RateConfirmationPanel({
       <dl className="grid grid-cols-2 gap-3 text-sm">
         <div>
           <dt className="text-xs font-medium uppercase tracking-wide text-muted">Agreed rate</dt>
-          <dd className="mt-0.5 text-ink">{money(rc.agreedRate, rc.currency)}</dd>
+          <dd className="mt-0.5 text-ink">{fmtMoney(rc.agreedRate, rc.currency)}</dd>
         </div>
         <div>
           <dt className="text-xs font-medium uppercase tracking-wide text-muted">Carrier</dt>
           <dd className="mt-0.5 text-ink">{rc.carrier.companyName}</dd>
+        </div>
+        <div>
+          <dt className="text-xs font-medium uppercase tracking-wide text-muted">
+            Agreement source
+          </dt>
+          <dd className="mt-0.5 text-ink">{AGREEMENT_SOURCE_LABEL[rc.agreementSource]}</dd>
         </div>
         <div>
           <dt className="text-xs font-medium uppercase tracking-wide text-muted">Awarded</dt>

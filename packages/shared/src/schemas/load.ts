@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { EquipmentType, LoadStatus, TransportMode } from "../enums";
-import { paginationSchema, uuidSchema } from "./common";
+import { EquipmentType, LoadCommercialMode, LoadStatus, TransportMode } from "../enums";
+import { paginationSchema, positiveMoneySchema, uuidSchema } from "./common";
 
 /** ISO-8601 datetime string (UTC). */
 const isoDateTime = z.string().datetime({ offset: true });
@@ -12,6 +12,13 @@ const weightLbs = z.coerce.number().int().min(1).max(200_000);
  * Load create/update payload shape. Cross-field temporal rules (delivery not
  * before pickup, window end not before start) are enforced by the domain
  * validator `validateLoadWindows` in @loadtopia/domain, and echoed by a DB CHECK.
+ *
+ * `commercialMode`/`postedRate` (Milestone 4 Phase 5) are validated for shape
+ * only here — always USD, always a positive amount when present. The
+ * cross-field rule ("PUBLISH_RATE requires a rate; REQUEST_OFFERS forbids
+ * one") is enforced server-side against the MERGED load state in
+ * `assertValidCommercialMode` (@loadtopia/domain), never at the schema layer
+ * alone, since an `update` may change one field without resending the other.
  */
 export const createLoadSchema = z
   .object({
@@ -25,6 +32,8 @@ export const createLoadSchema = z
     pickupWindowEnd: isoDateTime.optional(),
     deliveryWindowStart: isoDateTime.optional(),
     deliveryWindowEnd: isoDateTime.optional(),
+    commercialMode: z.nativeEnum(LoadCommercialMode).default(LoadCommercialMode.REQUEST_OFFERS),
+    postedRate: positiveMoneySchema.optional(),
   })
   .strict()
   .refine((v) => v.originLocationId !== v.destinationLocationId, {
@@ -45,6 +54,8 @@ export const updateLoadSchema = z
     pickupWindowEnd: isoDateTime.nullable().optional(),
     deliveryWindowStart: isoDateTime.nullable().optional(),
     deliveryWindowEnd: isoDateTime.nullable().optional(),
+    commercialMode: z.nativeEnum(LoadCommercialMode).optional(),
+    postedRate: positiveMoneySchema.nullable().optional(),
   })
   .strict()
   .refine((v) => Object.keys(v).length > 0, { message: "no fields to update" });
@@ -56,7 +67,19 @@ export const cancelLoadSchema = z
   .strict();
 export type CancelLoadInput = z.infer<typeof cancelLoadSchema>;
 
+/**
+ * Coverage grouping (Milestone 4 Phase 10) — a pure read/filter concept over
+ * the existing LoadStatus state machine, never a new status. Composes with
+ * `status` via AND, not override: `group=NEEDS_COVERAGE&status=POSTED`
+ * narrows to POSTED only; an incompatible combination (e.g.
+ * `group=COVERED&status=POSTED`) yields zero rows, exactly like any other
+ * AND-composed filter pair.
+ */
+export const coverageGroupSchema = z.enum(["DRAFT", "NEEDS_COVERAGE", "COVERED"]);
+export type CoverageGroup = z.infer<typeof coverageGroupSchema>;
+
 export const listLoadsSchema = paginationSchema.extend({
   status: z.nativeEnum(LoadStatus).optional(),
+  group: coverageGroupSchema.optional(),
 });
 export type ListLoadsQuery = z.infer<typeof listLoadsSchema>;

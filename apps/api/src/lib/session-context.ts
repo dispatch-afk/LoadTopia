@@ -106,6 +106,7 @@ export async function resolveSessionContext(
     companyType: activeMembership?.company.type ?? null,
     role,
     membershipId: activeMembership?.id ?? null,
+    isPrimary: activeMembership?.isPrimary ?? false,
   };
 
   return { sessionId: session.id, actor, memberships: views };

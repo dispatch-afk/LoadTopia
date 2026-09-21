@@ -5,21 +5,31 @@ import {
   isCarrierEligibleForLoad,
   MARKETPLACE_VISIBLE_STATUSES,
   Permission,
+  SHIPMENT_LOAD_STATUSES,
 } from "@loadtopia/domain";
 import {
   type AuthenticatedActor,
+  type BookAtPostedRateInput,
   type CreateOfferInput,
+  LoadAudienceStage,
+  LoadStatus,
   type MarketplaceLoadListItem,
   type MarketplaceLoadView,
   type MarketplaceSearchQuery,
   type OfferThreadView,
   type Paginated,
+  type Pagination,
+  type ShipmentListItem,
 } from "@loadtopia/shared";
 import { AppError, forbidden, notFound } from "../../lib/errors";
 import { loadCarrierEligibilityContext } from "../../lib/carrier-context";
 import { paginate, toSkipTake } from "../../lib/pagination";
+import { shipmentListInclude, toShipmentListItem } from "../loads/loads.serializer";
+import { isLoadVisibleToCarrier } from "../loads/audience-access";
+import { resolveAcceptedShipperIds, resolveBlockedShipperIds } from "../loads/audience.query";
 import { OffersService } from "../offers/offers.service";
 import { threadSummaryInclude, toThreadSummary } from "../offers/offer.serializer";
+import type { RateConfirmationGenerator } from "../rate-confirmations/rate-confirmation.service";
 import {
   marketplaceLoadInclude,
   METERS_PER_MILE,
@@ -38,8 +48,21 @@ type CarrierCtx = Awaited<ReturnType<typeof loadCarrierEligibilityContext>>;
 export class MarketplaceService {
   private readonly offers: OffersService;
 
-  constructor(private readonly prisma: PrismaClient) {
-    this.offers = new OffersService(prisma);
+  /**
+   * Milestone 4 release correction (P1-2): `rateConfirmations` is passed
+   * through to the internal {@link OffersService} exactly as
+   * `offers.routes.ts` already does for negotiated acceptance, so Book at
+   * Posted Rate gets the same best-effort, post-commit Rate Confirmation
+   * PDF generation as offer acceptance. Optional (not required) so existing
+   * callers/tests that only need the atomic commercial-acceptance behavior
+   * itself are unaffected; `OffersService` already treats a missing
+   * generator as "skip the post-commit hook," never as an error.
+   */
+  constructor(
+    private readonly prisma: PrismaClient,
+    rateConfirmations?: RateConfirmationGenerator,
+  ) {
+    this.offers = new OffersService(prisma, rateConfirmations);
   }
 
   /** Board access: must be an eligible carrier. Returns its eligibility context. */
@@ -124,8 +147,39 @@ export class MarketplaceService {
           }
         : undefined;
 
+    // Freight audience strategy (Milestone 4 Phase 4): precompute this
+    // carrier's live network membership ONCE for the whole list — never a
+    // per-row query. A block always wins, at every stage, including a
+    // legacy (no-strategy-record) load — see isCarrierInAudience.
+    //
+    // Both private stages (SELECTED and NETWORK) require the SAME two
+    // things — frozen snapshot membership at the load's CURRENT stage AND a
+    // live ACCEPTED connection right now (review corrections #1/#2): a
+    // snapshot is historical truth, never standing authorization by itself.
+    // `privateStageBranch` builds one identically-shaped OR-branch per
+    // stage so a disconnect (which only changes `acceptedShipperIds`) and a
+    // stage-scoped snapshot (which only changes `audienceMembers.some`)
+    // compose correctly without duplicating the query shape.
+    const [acceptedShipperIds, blockedShipperIds] = await Promise.all([
+      resolveAcceptedShipperIds(this.prisma, actor.companyId!),
+      resolveBlockedShipperIds(this.prisma, actor.companyId!),
+    ]);
+    const privateStageBranch = (stage: "SELECTED" | "NETWORK"): Prisma.LoadWhereInput => ({
+      audienceStrategy: { currentStage: stage },
+      audienceMembers: { some: { carrierCompanyId: actor.companyId!, stage } },
+      shipperCompanyId: { in: [...acceptedShipperIds] },
+    });
+    const audienceOr: Prisma.LoadWhereInput[] = [
+      { audienceStrategy: null },
+      { audienceStrategy: { currentStage: LoadAudienceStage.MARKETPLACE } },
+      privateStageBranch(LoadAudienceStage.NETWORK),
+      privateStageBranch(LoadAudienceStage.SELECTED),
+    ];
+
     const where: Prisma.LoadWhereInput = {
       status: { in: [...MARKETPLACE_VISIBLE_STATUSES] },
+      shipperCompanyId: { notIn: [...blockedShipperIds] },
+      OR: audienceOr,
       ...(equipmentIn ? { equipmentType: { in: equipmentIn } } : {}),
       ...(q.mode ? { mode: q.mode } : {}),
       ...(originStates ? { origin: { state: { in: originStates } } } : {}),
@@ -154,7 +208,13 @@ export class MarketplaceService {
       rows.map((r) => r.id),
     );
     return paginate(
-      rows.map((r) => toMarketplaceListItem(r, threads.get(r.id) ?? null)),
+      rows.map((r) =>
+        toMarketplaceListItem(
+          r,
+          threads.get(r.id) ?? null,
+          acceptedShipperIds.has(r.shipperCompanyId),
+        ),
+      ),
       total,
       q,
     );
@@ -171,6 +231,17 @@ export class MarketplaceService {
     if (!load || !MARKETPLACE_VISIBLE_STATUSES.includes(load.status)) {
       throw notFound("Load not found");
     }
+    // Freight audience strategy (Milestone 4 Phase 4): outside the current
+    // audience (or blocked) ⇒ the SAME 404 — a carrier must not learn that
+    // restricted freight exists (§22).
+    if (
+      !(await isLoadVisibleToCarrier(this.prisma, actor.companyId!, {
+        id: loadId,
+        shipperCompanyId: load.shipperCompanyId,
+      }))
+    ) {
+      throw notFound("Load not found");
+    }
 
     const eligibility = isCarrierEligibleForLoad(ctx, {
       status: load.status,
@@ -178,9 +249,12 @@ export class MarketplaceService {
       originState: load.origin.state,
     });
 
-    const threads = await this.myThreadsByLoad(actor.companyId!, [loadId]);
+    const [threads, network] = await Promise.all([
+      this.myThreadsByLoad(actor.companyId!, [loadId]),
+      resolveAcceptedShipperIds(this.prisma, actor.companyId!),
+    ]);
     return {
-      ...toMarketplaceListItem(load, threads.get(loadId) ?? null),
+      ...toMarketplaceListItem(load, threads.get(loadId) ?? null, network.has(load.shipperCompanyId)),
       eligibility: { eligible: eligibility.eligible, reasons: [...eligibility.reasons] },
     };
   }
@@ -193,9 +267,56 @@ export class MarketplaceService {
     return this.offers.createOffer(actor, loadId, input);
   }
 
+  /** Book at Posted Rate (Milestone 4 Phase 5) — binding commercial
+   *  acceptance of a shipper's published rate. Delegates entirely to
+   *  OffersService, which converges on the same commercial-acceptance core
+   *  negotiated `accept()` uses — no separate booking engine here. */
+  async bookAtPostedRate(
+    actor: AuthenticatedActor,
+    loadId: string,
+    input: BookAtPostedRateInput,
+  ): Promise<OfferThreadView> {
+    return this.offers.bookAtPostedRate(actor, loadId, input);
+  }
+
   /** This carrier's negotiation on one load (for the board / load detail page). */
   async myThreadForLoad(actor: AuthenticatedActor, loadId: string) {
     assertPermission(actor, Permission.OFFER_READ_OWN);
     return this.offers.carrierThreadForLoad(actor, loadId);
+  }
+
+  /**
+   * Carrier "My Shipments" workspace (Milestone 4 Phase 5, §21-22) — the
+   * same Load rows as the marketplace board, scoped to loads THIS carrier
+   * won (`carrierCompanyId` — already indexed) and filtered to the shipment
+   * lifecycle. A carrier can never see another carrier's shipment: the scope
+   * is the row filter itself, not a post-hoc redaction.
+   */
+  async listMyShipments(
+    actor: AuthenticatedActor,
+    q: Pagination,
+  ): Promise<Paginated<ShipmentListItem>> {
+    assertPermission(actor, Permission.MARKETPLACE_BROWSE);
+    const carrierCompanyId = actor.companyId;
+    if (!carrierCompanyId) throw forbidden();
+
+    const where: Prisma.LoadWhereInput = {
+      carrierCompanyId,
+      status: { in: [...SHIPMENT_LOAD_STATUSES, LoadStatus.CANCELLED] },
+    };
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.load.findMany({
+        where,
+        include: shipmentListInclude,
+        orderBy: { updatedAt: "desc" },
+        ...toSkipTake(q),
+      }),
+      this.prisma.load.count({ where }),
+    ]);
+    return paginate(
+      rows.map((r) => toShipmentListItem(r, "carrier")),
+      total,
+      q,
+    );
   }
 }

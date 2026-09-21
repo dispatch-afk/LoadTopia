@@ -7,7 +7,9 @@ import {
   assertCanModifyLoad,
   assertCanOperateShipment,
   assertCanUploadOperationalDocument,
+  assertCompanyPrimaryAuthority,
   assertCompanyScope,
+  assertLoadFacilityScope,
   assertPermission,
   canManageOwnOperationalDocument,
   canModifyLoad,
@@ -15,6 +17,8 @@ import {
   canReadLoad,
   canUploadOperationalDocument,
   hasPermission,
+  isCompanyPrimaryAuthority,
+  isLoadWithinActorFacilityScope,
   isSameCompany,
   loadViewerRole,
 } from "./policy";
@@ -27,6 +31,7 @@ const shipper: AuthenticatedActor = {
   companyType: CompanyType.SHIPPER,
   role: UserRole.SHIPPER,
   membershipId: "m-ship",
+  isPrimary: true,
 };
 const otherShipper: AuthenticatedActor = {
   ...shipper,
@@ -41,6 +46,7 @@ const carrier: AuthenticatedActor = {
   companyType: CompanyType.CARRIER,
   role: UserRole.CARRIER,
   membershipId: "m-car",
+  isPrimary: true,
 };
 const admin: AuthenticatedActor = {
   userId: "u-admin",
@@ -49,6 +55,7 @@ const admin: AuthenticatedActor = {
   companyType: null,
   role: UserRole.ADMIN,
   membershipId: null,
+  isPrimary: false,
 };
 
 describe("permission checks", () => {
@@ -291,5 +298,73 @@ describe("loadViewerRole", () => {
     expect(
       loadViewerRole(carrier, { shipperCompanyId: "co-shipper", carrierCompanyId: null }),
     ).toBe("other");
+  });
+});
+
+describe("isLoadWithinActorFacilityScope (Milestone 4 Phase 7)", () => {
+  const load = {
+    shipperCompanyId: "co-shipper",
+    carrierCompanyId: "co-carrier",
+    originLocationId: "loc-a",
+    destinationLocationId: "loc-b",
+  };
+  const scopedToA = [{ locationId: "loc-a" }];
+  const scopedToC = [{ locationId: "loc-c" }];
+
+  it("no scope rows -> unrestricted", () => {
+    expect(isLoadWithinActorFacilityScope(shipper, load, [])).toBe(true);
+  });
+
+  it("origin match -> within scope", () => {
+    expect(isLoadWithinActorFacilityScope(shipper, load, scopedToA)).toBe(true);
+  });
+
+  it("destination match -> within scope", () => {
+    expect(isLoadWithinActorFacilityScope(shipper, load, [{ locationId: "loc-b" }])).toBe(true);
+  });
+
+  it("neither endpoint matches -> outside scope", () => {
+    expect(isLoadWithinActorFacilityScope(shipper, load, scopedToC)).toBe(false);
+    expect(() => assertLoadFacilityScope(shipper, load, scopedToC)).toThrow(ResourceScopeError);
+  });
+
+  it("multiple allowed facilities -> within scope if any matches", () => {
+    expect(isLoadWithinActorFacilityScope(shipper, load, [...scopedToC, { locationId: "loc-b" }])).toBe(
+      true,
+    );
+  });
+
+  it("is a no-op for a carrier viewing an awarded shipment — never compares the carrier's own scope", () => {
+    // The carrier's OWN facility scope (if any) references carrier-owned locations
+    // that have no relationship to this shipper load's origin/destination — passing
+    // scope rows here must never be interpreted as a restriction on the carrier.
+    expect(isLoadWithinActorFacilityScope(carrier, load, scopedToC)).toBe(true);
+  });
+
+  it("is a no-op for admin/staff regardless of scope rows", () => {
+    expect(isLoadWithinActorFacilityScope(admin, load, scopedToC)).toBe(true);
+  });
+
+  it("is a no-op for an unrelated company (cross-company IDOR is canReadLoad's concern, not this)", () => {
+    expect(isLoadWithinActorFacilityScope(otherShipper, load, scopedToC)).toBe(true);
+  });
+});
+
+describe("isCompanyPrimaryAuthority (Milestone 4 Phase 2)", () => {
+  it("grants authority to the company's primary member", () => {
+    expect(shipper.isPrimary).toBe(true);
+    expect(isCompanyPrimaryAuthority(shipper)).toBe(true);
+  });
+
+  it("denies authority to a non-primary member, even in the same company", () => {
+    const ordinaryMember: AuthenticatedActor = { ...shipper, isPrimary: false };
+    expect(isCompanyPrimaryAuthority(ordinaryMember)).toBe(false);
+    expect(() => assertCompanyPrimaryAuthority(ordinaryMember)).toThrow(AuthorizationError);
+  });
+
+  it("grants authority to platform staff regardless of isPrimary", () => {
+    expect(admin.isPrimary).toBe(false);
+    expect(isCompanyPrimaryAuthority(admin)).toBe(true);
+    expect(() => assertCompanyPrimaryAuthority(admin)).not.toThrow();
   });
 });

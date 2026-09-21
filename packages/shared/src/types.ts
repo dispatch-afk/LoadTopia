@@ -1,14 +1,23 @@
 import type {
   CarrierOperatingStatus,
+  CarrierPreferenceType,
   CarrierVerificationStatus,
+  CompanyBlockStatus,
   CompanyType,
+  ConnectionEventType,
+  ConnectionStatus,
   DocumentReviewStatus,
   DocumentType,
   EquipmentType,
+  LoadAudienceStage,
+  LoadAudienceStrategyType,
+  LoadCommercialMode,
   LoadEventType,
+  LoadReleaseStatus,
   LoadStatus,
   MarketplaceEligibility,
   OfferEventType,
+  OfferThreadOriginType,
   OfferThreadStatus,
   RateConfirmationStatus,
   TransportMode,
@@ -29,6 +38,19 @@ export interface AuthenticatedActor {
   role: UserRole;
   /** Membership id for the active company, if any. */
   membershipId: string | null;
+  /**
+   * Milestone 4: whether the active membership is the company's PRIMARY
+   * membership — the company-level authority tier ("primary/admin may
+   * manage") sits on top of role permissions, the same way facility scope
+   * sits on top of them for "where": role/permission decides WHAT a user may
+   * do, this decides whether they hold company-owner-level authority for
+   * sensitive relationship actions (accept/decline/disconnect a Connection,
+   * block/unblock, manage Carrier Groups/preferences, facility-scope admin).
+   * False for an ADMIN staff actor with no membership at all — `isAdmin()`/
+   * `isCompanyPrimaryAuthority()` treat platform staff as authorized
+   * regardless of this flag, so that case never matters in practice.
+   */
+  isPrimary: boolean;
 }
 
 export interface PublicUser {
@@ -55,6 +77,12 @@ export interface MeResponse {
   activeCompanyId: string | null;
   role: UserRole | null;
   permissions: string[];
+  /** Whether the ACTIVE membership has one or more MembershipFacilityScope
+   *  rows (Milestone 4 Phase 11). `true` = facility-scoped, `false` =
+   *  company-wide (no rows), `null` when there is no active company
+   *  membership to evaluate (e.g. platform staff with no membership). Never
+   *  reveals anything about OTHER members' scope or hidden freight counts. */
+  facilityScoped: boolean | null;
 }
 
 export interface CompanyView {
@@ -76,6 +104,16 @@ export interface CompanyView {
   updatedAt: string;
 }
 
+/** A member's own-company freight access mode (Milestone 4 Phase 11) —
+ *  derived from MembershipFacilityScope, computed with one bounded query per
+ *  member LIST (never one request per member). `facilityCount` is a count of
+ *  facilities ASSIGNED TO THIS MEMBER, never a count of hidden/out-of-scope
+ *  freight. */
+export interface FreightAccessSummary {
+  companyWide: boolean;
+  facilityCount: number;
+}
+
 export interface CompanyMemberView {
   membershipId: string;
   userId: string;
@@ -86,6 +124,7 @@ export interface CompanyMemberView {
   isPrimary: boolean;
   isActive: boolean;
   createdAt: string;
+  freightAccess: FreightAccessSummary;
 }
 
 export interface LocationView {
@@ -139,6 +178,17 @@ export interface LoadEventView {
   createdAt: string;
 }
 
+/** Lightweight per-row audience summary for the shipper Loads list — no live
+ *  network-membership count (that needs a cross-table query per row); just
+ *  what a single JOIN on the same list query already provides. The full
+ *  `LoadAudienceView` (with counts) lives on `LoadView` for the detail page. */
+export interface LoadListAudienceSummary {
+  strategy: LoadAudienceStrategyType;
+  currentStage: LoadAudienceStage;
+  /** The earliest still-PENDING scheduled release, if any. */
+  nextReleaseAt: string | null;
+}
+
 export interface LoadListItem {
   id: string;
   referenceNumber: string;
@@ -154,6 +204,13 @@ export interface LoadListItem {
   deliveryWindowStart: string | null;
   deliveryWindowEnd: string | null;
   miles: number | null;
+  /** Null for DRAFT and for a pre-Phase-4 posted load — see LoadAudienceView. */
+  audience: LoadListAudienceSummary | null;
+  activeOfferCount: number;
+  /** Deterministic, factual "what happens next" copy — see `commercialNextAction`
+   *  in @loadtopia/domain (Milestone 4 Phase 10). The web layer renders this
+   *  verbatim; it never independently interprets `status` to derive its own. */
+  commercialNextAction: string;
   createdAt: string;
 }
 
@@ -162,6 +219,11 @@ export interface LoadView {
   referenceNumber: string;
   status: LoadStatus;
   shipperCompanyId: string;
+  /** The shipper's company name — always present (every load has a shipper),
+   *  unlike `marketplace.award.carrierName` which only exists once awarded.
+   *  Milestone 4 Phase 6: the assigned carrier's operational view needs this
+   *  to know who they're shipping for. */
+  shipperName: string;
   equipmentType: EquipmentType;
   mode: TransportMode;
   commodity: string | null;
@@ -190,6 +252,29 @@ export interface LoadView {
   completedAt: string | null;
   /** Marketplace (Milestone 2): active-offer count + award outcome. */
   marketplace: LoadMarketplaceView;
+  /** Freight audience strategy (Milestone 4 Phase 4). Null for a DRAFT load
+   *  (no strategy chosen yet) and for a pre-Phase-4 posted load (legacy —
+   *  see LoadAudienceView's doc comment). */
+  audience: LoadAudienceView | null;
+  /**
+   * Commercial agreement (Milestone 4 Phase 5). `commercialMode` defaults to
+   * REQUEST_OFFERS for every load (including every historical one — see
+   * LoadCommercialMode's doc comment); `postedRate` is the shipper's own
+   * binding USD rate, null unless PUBLISH_RATE. `ratePerMile` is plain
+   * arithmetic (`postedRate / routing.miles`, 2dp) — never a market signal —
+   * present only when both a posted rate and routed miles exist.
+   */
+  commercialMode: LoadCommercialMode;
+  postedRate: string | null;
+  ratePerMile: string | null;
+  /**
+   * Deterministic, factual "what happens next" copy for the CURRENT VIEWER
+   * (Milestone 4 Phase 6) — the same source `ShipmentListItem.nextAction`
+   * uses (`shipmentNextAction` in @loadtopia/domain), so list and detail
+   * never disagree. Null for admin/other viewers (no party is "responsible"
+   * from their seat) and for a load outside the shipment lifecycle.
+   */
+  shipmentNextAction: string | null;
   createdAt: string;
   updatedAt: string;
   events: LoadEventView[];
@@ -207,6 +292,85 @@ export interface LoadMarketplaceView {
     awardedAt: string;
     assignedAt: string | null;
   } | null;
+}
+
+// --- Freight audience strategy (Milestone 4 Phase 4) ------------------------
+
+export interface LoadAudienceReleaseView {
+  id: string;
+  toStage: LoadAudienceStage;
+  status: LoadReleaseStatus;
+  scheduledAt: string;
+  executedAt: string | null;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+}
+
+/**
+ * The shipper's own view of a posted load's audience state — current stage,
+ * the strategy chosen at posting, and any pending scheduled release(s).
+ * `null` on `LoadView.audience` means either the load is still DRAFT, or it
+ * is a pre-Phase-4 load with no recorded strategy (legacy: full marketplace
+ * visibility, see the audience-visibility domain module).
+ */
+export interface LoadAudienceView {
+  strategy: LoadAudienceStrategyType;
+  currentStage: LoadAudienceStage;
+  autoReleaseDisabled: boolean;
+  /** SELECTED: the frozen snapshot size. NETWORK: the shipper's CURRENT
+   *  eligible ACCEPTED-connected carrier count. MARKETPLACE: null — not a
+   *  bounded, meaningful number to surface. */
+  audienceCount: number | null;
+  pendingReleases: LoadAudienceReleaseView[];
+}
+
+/**
+ * A non-authoritative preview of what Review & Post would produce, shown
+ * before the shipper commits. The final POST always revalidates everything
+ * at commit time — this preview is a convenience only, never trusted as
+ * final (see the audience-preview endpoint / Review & Post UI).
+ */
+export interface AudiencePreviewView {
+  strategy: LoadAudienceStrategyType;
+  /** Currently-eligible carrier count for the chosen strategy. Null for
+   *  MARKETPLACE — the eligible count is the whole (unbounded) board. */
+  eligibleCarrierCount: number | null;
+  /** For SELECTED_FIRST only: how many of the shipper's chosen carriers/
+   *  group members failed current revalidation (not ACCEPTED-connected, or
+   *  blocked) and would be silently dropped from the snapshot at posting. */
+  ineligibleSelectedCount: number;
+}
+
+// --- Shipments workspaces (Milestone 4 Phase 5) -----------------------------
+
+/**
+ * One row in a Shipments table — the SAME underlying Load record shown from
+ * a post-coverage, operational point of view (see the Load -> Shipment
+ * product decision: no separate Shipment entity). Shared shape for both the
+ * shipper's "Shipments" list and the carrier's "My Shipments" list; each
+ * endpoint scopes and authorizes its own rows independently.
+ */
+export interface ShipmentListItem {
+  id: string;
+  referenceNumber: string;
+  status: LoadStatus;
+  origin: { city: string; state: string };
+  destination: { city: string; state: string };
+  pickupWindowStart: string | null;
+  pickupWindowEnd: string | null;
+  deliveryWindowStart: string | null;
+  deliveryWindowEnd: string | null;
+  shipperCompanyId: string;
+  shipperName: string;
+  carrierCompanyId: string | null;
+  carrierName: string | null;
+  /** The accepted USD rate, once awarded — the same value as
+   *  `LoadView.marketplace.award.amount`. */
+  bookedRate: string | null;
+  /** Deterministic, factual copy for "what happens next" — see
+   *  `shipmentNextAction` in @loadtopia/domain. Never invents urgency. */
+  nextAction: string;
+  updatedAt: string;
 }
 
 // --- Operations (Milestone 3): manual check-ins ------------------------ ---
@@ -343,6 +507,14 @@ export interface RateConfirmationView {
   equipmentType: EquipmentType;
   commodity: string | null;
   weightLbs: number | null;
+  /**
+   * How the commercial agreement behind this RC originated (Milestone 4
+   * Phase 6) — derived, read-only, from the awarded OfferRound's thread
+   * (`OfferThread.originType`); never stored on the RC snapshot itself and
+   * never mutates it. POSTED_RATE_BOOKING = "Booked at posted rate",
+   * CARRIER_OFFER = "Negotiated offer" (see OfferThreadOriginType).
+   */
+  agreementSource: OfferThreadOriginType;
   download: { url: string; expiresAt: string } | null;
   documentPending: boolean;
 }
@@ -403,10 +575,24 @@ export interface MarketplaceLoadListItem {
    * historical mock mileage from real routing.
    */
   routing: { provider: string | null; isMock: boolean };
+  shipperCompanyId: string;
   shipperName: string;
+  /** Factual only: does the viewing carrier currently hold an ACCEPTED
+   *  Connection with this shipper? Never implies "you were specially
+   *  selected" and never reveals the shipper's audience/release strategy. */
+  shipperIsConnected: boolean;
   postedAt: string | null;
   /** This carrier's negotiation on this load, if any. */
   myThread: OfferThreadSummary | null;
+  /**
+   * Commercial agreement (Milestone 4 Phase 5). REQUEST_OFFERS loads always
+   * carry `postedRate: null` — there is no binding shipper price to show,
+   * only the option to Submit Offer. `ratePerMile` is factual arithmetic
+   * only (`postedRate / miles`, 2dp), never labeled good/bad/competitive.
+   */
+  commercialMode: LoadCommercialMode;
+  postedRate: string | null;
+  ratePerMile: string | null;
 }
 
 export interface MarketplaceLoadView extends MarketplaceLoadListItem {
@@ -448,8 +634,26 @@ export interface OfferThreadSummary {
   currentExpiresAt: string | null;
   /** True when it is this viewer's turn to respond to the current round. */
   awaitingMyResponse: boolean;
+  /** Why this thread closed (e.g. "load_awarded_to_other", "offer accepted"),
+   *  null while still ACTIVE. A factual system reason, never another party's
+   *  identity — Milestone 4 Phase 9 uses this to give a losing carrier a
+   *  truthful "Load Covered" state instead of a generic not-found. */
+  closedReason: string | null;
   carrier: { companyId: string; name: string } | null;
+  /** How round 1 originated (Milestone 4 Phase 5) — a carrier's own offer, or
+   *  a synthesized round representing the shipper's posted rate that this
+   *  carrier booked. Never implies a negotiation that did not happen. */
+  originType: OfferThreadOriginType;
   updatedAt: string;
+  /** Milestone 4 Phase 12: the minimal load identity/lane context a thread
+   *  LIST needs to be usable on its own (previously a bare "View load"
+   *  link) — never the winner, a competing amount, or any commercial fact
+   *  beyond what this thread's own participant already legitimately sees. */
+  load: {
+    referenceNumber: string;
+    origin: { city: string; state: string };
+    destination: { city: string; state: string };
+  };
 }
 
 export interface OfferThreadView extends OfferThreadSummary {
@@ -550,3 +754,277 @@ export interface HealthReport {
     providers: Record<string, { status: HealthStatus; isMock: boolean; message?: string }>;
   };
 }
+
+// ---------------------------------------------------------------------------
+// Relationship network + facility scope (Milestone 4 Phase 2)
+//
+// PRIVACY: every view below is scoped to a single company's own perspective.
+// None of these types are ever returned to the counterparty company — see
+// each service's own scoping, not a shared "public" projection.
+// ---------------------------------------------------------------------------
+
+/** A carrier's own view of one of its Follows (private to the carrier). */
+export interface CarrierFollowView {
+  id: string;
+  shipperCompanyId: string;
+  shipperCompanyName: string;
+  createdAt: string;
+}
+
+/** A Connection from either participant's perspective — visible to BOTH
+ *  companies in the pair (never to anyone else). */
+export interface ConnectionView {
+  id: string;
+  companyAId: string;
+  companyBId: string;
+  /** The other company, resolved relative to the requesting actor. */
+  counterpartCompanyId: string;
+  counterpartCompanyName: string;
+  status: ConnectionStatus;
+  requesterCompanyId: string;
+  /** True when the current actor's company is NOT the requester — i.e. they
+   *  are the one who may accept/decline a PENDING request. */
+  awaitingMyResponse: boolean;
+  requestedAt: string;
+  respondedAt: string | null;
+  disconnectedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /**
+   * Verified shared-history summary with the counterpart company, computed
+   * from authoritative awarded-Load truth (never offers/marketplace
+   * exposure). Present on every list/detail response so the Network
+   * workspace never needs a per-row follow-up request.
+   */
+  sharedHistory: SharedHistorySummary;
+}
+
+export interface ConnectionEventView {
+  id: string;
+  type: ConnectionEventType;
+  actorCompanyId: string | null;
+  createdAt: string;
+}
+
+export interface ConnectionDetailView extends ConnectionView {
+  events: ConnectionEventView[];
+}
+
+/** A shipper's own, PRIVATE preference on a carrier — never returned to the
+ *  carrier or any other company. */
+export interface CarrierPreferenceView {
+  carrierCompanyId: string;
+  carrierCompanyName: string;
+  preference: CarrierPreferenceType;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A blocking company's own, PRIVATE view of one of its Blocks — never
+ *  returned to the blocked company. */
+export interface CompanyBlockView {
+  id: string;
+  blockedCompanyId: string;
+  blockedCompanyName: string;
+  status: CompanyBlockStatus;
+  createdAt: string;
+  effectiveAt: string | null;
+  removedAt: string | null;
+}
+
+/** A shipper's own, PRIVATE Carrier Group member — the carrier is never told
+ *  it is in this (or any) group. */
+export interface CarrierGroupMemberView {
+  carrierCompanyId: string;
+  carrierCompanyName: string;
+  addedAt: string;
+}
+
+export interface CarrierGroupView {
+  id: string;
+  name: string;
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CarrierGroupDetailView extends CarrierGroupView {
+  members: CarrierGroupMemberView[];
+}
+
+/** A membership's facility scope. `companyWide` is true iff `locationIds` is
+ *  empty — the two are always consistent, `companyWide` is just the
+ *  self-documenting reading of "no rows". */
+export interface FacilityScopeView {
+  membershipId: string;
+  locationIds: string[];
+  companyWide: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Relationship network — Phase 3 product surface (Company/Relationship
+// Profile, verified shared history)
+// ---------------------------------------------------------------------------
+
+/** One verified shared load, for the "Shared Freight" section of a
+ *  Relationship Profile. Derived ONLY from an actually-awarded Load — a
+ *  losing offer thread or a cancelled pre-award load never appears here. */
+export interface SharedLaneView {
+  loadId: string;
+  referenceNumber: string;
+  origin: { city: string; state: string };
+  destination: { city: string; state: string };
+  status: LoadStatus;
+  awardedAt: string;
+  completedAt: string | null;
+}
+
+/** Verified shared-history SCALAR summary between the viewer's company and a
+ *  counterpart — computed live from authoritative Load truth (never a
+ *  persisted vanity metric). All-zero/null for a pair that has never been
+ *  awarded freight together, including a pair with only losing offers,
+ *  cancelled pre-award loads, or mere marketplace visibility. Deliberately
+ *  has NO lane-level detail — that's list-unsafe (see
+ *  {@link CompanyProfileSharedHistory}); this is the shape attached to every
+ *  row of a Connection LIST, computed batched (never per-row). */
+export interface SharedHistorySummary {
+  shipmentsTogether: number;
+  completedShipments: number;
+  activeShipments: number;
+  lastWorkedTogether: string | null;
+}
+
+/** The full shared-history payload for a SINGLE pair's Company/Relationship
+ *  Profile detail page — the scalar summary plus recent lane-level detail.
+ *  Never used in a list response (that would mean N per-row lane queries). */
+export interface CompanyProfileSharedHistory extends SharedHistorySummary {
+  recentLanes: SharedLaneView[];
+}
+
+/** The viewer's OWN private relationship state toward a company being
+ *  profiled — never the counterpart's state toward the viewer. `null` for a
+ *  field that doesn't apply to this viewer/counterpart combination (e.g.
+ *  `isFollowing` is null when the viewer isn't a carrier looking at a
+ *  shipper). */
+export interface RelationshipContextView {
+  connection: ConnectionView | null;
+  connectionEvents: ConnectionEventView[];
+  /** Only meaningful when the viewer is a CARRIER viewing a SHIPPER. */
+  isFollowing: boolean | null;
+  /** Only meaningful when the viewer is a SHIPPER viewing a CARRIER. Never
+   *  the reverse — a carrier can never learn a shipper's preference. */
+  preference: CarrierPreferenceType | null;
+  /** The VIEWER's own block against this company, if any and in force.
+   *  Never the counterpart's block against the viewer. */
+  blockStatus: CompanyBlockStatus | null;
+  /** Only meaningful when the viewer is a SHIPPER viewing a CARRIER: which
+   *  of the viewer's OWN Carrier Groups this carrier belongs to. */
+  groups: { id: string; name: string }[] | null;
+}
+
+/** Business-profile facts about a CARRIER company, self-declared via
+ *  CarrierProfile — the same identity/capability facts already shown on the
+ *  marketplace board, never verification/eligibility internals (those are
+ *  LoadTopia-internal gates, not a trust badge to display to another
+ *  company). */
+export interface CompanyCapabilitiesView {
+  legalName: string;
+  equipmentTypes: EquipmentType[];
+  serviceAreaStates: string[];
+}
+
+/** Unified Company Profile / Relationship Profile payload — ONE route (per
+ *  companyId) whose content adapts to relationship state and the viewer's
+ *  own company type, rather than separate profile/relationship endpoints. */
+export interface CompanyProfileView {
+  id: string;
+  type: CompanyType;
+  name: string;
+  city: string | null;
+  state: string | null;
+  memberSince: string;
+  capabilities: CompanyCapabilitiesView | null;
+  relationship: RelationshipContextView;
+  sharedHistory: CompanyProfileSharedHistory;
+}
+
+/** A shipper's own connected (ACCEPTED) carrier, eligible for Carrier Group
+ *  membership — used to populate the "add carrier" control without the
+ *  client having to re-derive eligibility from raw connection/block state. */
+export interface EligibleGroupCarrierView {
+  companyId: string;
+  companyName: string;
+}
+
+// --- Dashboard / Attention Center (Milestone 4 Phase 8) ------------------
+//
+// Plain read-model facts only — no scoring, no priority, no urgency. Every
+// count here is a deterministic function of existing Load/OfferThread state
+// (see `shipmentNextAction` / `deriveShipmentPodState` / `respondingParty`
+// in @loadtopia/domain, which this data agrees with by construction, not by
+// re-derivation). `kind` identifies WHAT fact an attention item represents;
+// the web layer owns the label copy and the link destination — the API
+// never dictates a route. Zero counts are still returned (never filtered
+// server-side) so the caller can decide how to present "nothing needs
+// attention" truthfully, without losing the underlying fact.
+
+export type ShipperAttentionKind =
+  | "NEEDS_COVERAGE"
+  | "POD_AWAITING_REVIEW"
+  | "READY_TO_COMPLETE"
+  | "REPLACEMENT_POD_NEEDED";
+
+export interface ShipperAttentionItem {
+  kind: ShipperAttentionKind;
+  count: number;
+}
+
+export interface ShipperDashboardOverview {
+  activeShipmentCount: number;
+  draftLoadCount: number;
+  totalLoadCount: number;
+}
+
+export interface ShipperDashboardSummary {
+  role: "SHIPPER";
+  overview: ShipperDashboardOverview;
+  /** All four kinds always present, in a fixed factual order — filtering to
+   *  non-zero is a presentation decision, made by the web layer. */
+  attention: ShipperAttentionItem[];
+  /** Facility-scope-enforced (Milestone 4 Phase 7) — identical guarantee as
+   *  GET /loads/shipments: an out-of-scope load can never appear here. */
+  recentShipments: ShipmentListItem[];
+}
+
+export type CarrierAttentionKind =
+  | "AWAITING_MY_RESPONSE"
+  | "AWAITING_PICKUP"
+  | "READY_FOR_TRANSIT_UPDATE"
+  | "AWAITING_DELIVERY_CONFIRMATION"
+  | "POD_NEEDED"
+  | "REPLACEMENT_POD_NEEDED";
+
+export interface CarrierAttentionItem {
+  kind: CarrierAttentionKind;
+  count: number;
+}
+
+export interface CarrierDashboardOverview {
+  /** Null — never 0 — when the carrier is not currently marketplace-eligible;
+   *  0 and "not eligible" are different facts and must never be conflated. */
+  availableFreightCount: number | null;
+  activeOfferCount: number;
+  wonShipmentCount: number;
+}
+
+export interface CarrierDashboardSummary {
+  role: "CARRIER";
+  marketplaceEligible: boolean;
+  overview: CarrierDashboardOverview;
+  /** All six kinds always present, in a fixed factual order. */
+  attention: CarrierAttentionItem[];
+  recentShipments: ShipmentListItem[];
+  recentOffers: OfferThreadSummary[];
+}
+
+export type DashboardSummaryView = ShipperDashboardSummary | CarrierDashboardSummary;

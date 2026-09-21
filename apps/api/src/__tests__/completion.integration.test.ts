@@ -104,7 +104,7 @@ suite("shipment completion (integration)", () => {
         url: `/api/offers/rounds/${offer.json().rounds[0].id}/accept`,
       }),
     );
-    await api.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }));
+    // Milestone 4 Phase 5: acceptance already auto-assigned — no /assign call.
     for (const v of ["pickup", "in-transit", "deliver"]) {
       await api.inject(authed(c.cookie, { method: "POST", url: `/api/loads/${loadId}/${v}` }));
     }
@@ -265,7 +265,7 @@ suite("shipment completion (integration)", () => {
         url: `/api/offers/rounds/${offer.json().rounds[0].id}/accept`,
       }),
     );
-    await api.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }));
+    // Milestone 4 Phase 5: acceptance already auto-assigned — no /assign call.
     await api.inject(authed(c.cookie, { method: "POST", url: `/api/loads/${loadId}/pickup` }));
 
     const res = await complete(s.cookie, loadId); // PICKED_UP

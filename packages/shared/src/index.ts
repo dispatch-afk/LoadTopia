@@ -12,3 +12,5 @@ export * from "./schemas/carrier-profile";
 export * from "./schemas/offer";
 export * from "./schemas/marketplace";
 export * from "./schemas/pricing";
+export * from "./schemas/network";
+export * from "./schemas/load-audience";

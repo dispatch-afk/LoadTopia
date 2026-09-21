@@ -11,6 +11,7 @@ import {
   type DocumentView,
 } from "@loadtopia/shared";
 import { AppError, conflict, notFound } from "../../lib/errors";
+import { enforceLoadFacilityScope } from "../../lib/facility-scope";
 import { appendLoadEvent } from "../../lib/load-lifecycle";
 import { toDocumentView } from "./documents.serializer";
 
@@ -48,13 +49,22 @@ export class PodReviewService {
     const doc = await this.prisma.loadDocument.findUnique({
       where: { id: documentId },
       include: {
-        load: { select: { shipperCompanyId: true, carrierCompanyId: true, status: true } },
+        load: {
+          select: {
+            shipperCompanyId: true,
+            carrierCompanyId: true,
+            status: true,
+            originLocationId: true,
+            destinationLocationId: true,
+          },
+        },
       },
     });
     if (!doc) throw notFound("Document not found");
     // 404 for anyone outside the load's scope; 403 for the assigned carrier
     // (canModifyLoad is shipper-only + admin — the carrier can never review).
     assertCanModifyLoad(actor, doc.load);
+    await enforceLoadFacilityScope(this.prisma, actor, doc.load);
 
     if (!isWithinOperationalActivityWindow(doc.load.status)) {
       throw conflict("POD review is frozen once the shipment is completed or cancelled.");

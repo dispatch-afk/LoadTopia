@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { LoadView } from "@loadtopia/shared";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { ConfirmDialog } from "@/components/dialog";
 import { Alert, Button, Spinner } from "@/components/ui";
 import { canCompleteShipment, completionBlockedReason } from "@/lib/operations";
 
@@ -16,6 +17,7 @@ import { canCompleteShipment, completionBlockedReason } from "@/lib/operations";
 export function ShipperCompleteAction({ load }: { load: LoadView }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const blockedReason = completionBlockedReason(load);
@@ -32,11 +34,11 @@ export function ShipperCompleteAction({ load }: { load: LoadView }) {
   }
 
   async function complete() {
-    if (!window.confirm("Mark this shipment completed? This closes out the load.")) return;
     setBusy(true);
     setError(null);
     try {
       await apiClient(`/loads/${load.id}/complete`, { method: "POST" });
+      setConfirming(false);
       router.refresh();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
@@ -54,9 +56,18 @@ export function ShipperCompleteAction({ load }: { load: LoadView }) {
   return (
     <div className="space-y-2">
       {error && <Alert>{error}</Alert>}
-      <Button onClick={complete} disabled={busy}>
+      <Button onClick={() => setConfirming(true)} disabled={busy}>
         {busy && <Spinner />} Complete shipment
       </Button>
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        title="Complete this shipment?"
+        description="This closes out the load."
+        confirmLabel="Complete shipment"
+        busy={busy}
+        onConfirm={complete}
+      />
     </div>
   );
 }

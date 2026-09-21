@@ -98,6 +98,27 @@ export function isWithinOperationalActivityWindow(status: LoadStatus): boolean {
   return OPERATIONAL_ACTIVITY_STATUSES.includes(status);
 }
 
+/**
+ * Statuses at which a Load counts as a "Shipment" in product terms — freight
+ * that has been commercially covered and now needs to move (Milestone 4
+ * Phase 5). Includes AWARDED (a load may briefly, or — for a pre-Phase-5
+ * historical record — indefinitely, rest there before assignment) through
+ * COMPLETED. Deliberately excludes DRAFT/POSTED/OFFER_RECEIVED, which are
+ * still being commercially decided, never shown as a Shipment.
+ */
+export const SHIPMENT_LOAD_STATUSES: readonly LoadStatus[] = [
+  LoadStatus.AWARDED,
+  LoadStatus.CARRIER_ASSIGNED,
+  LoadStatus.PICKED_UP,
+  LoadStatus.IN_TRANSIT,
+  LoadStatus.DELIVERED,
+  LoadStatus.COMPLETED,
+];
+
+export function isShipmentLoadStatus(status: LoadStatus): boolean {
+  return SHIPMENT_LOAD_STATUSES.includes(status);
+}
+
 export class LoadTransitionError extends Error {
   readonly code = "INVALID_LOAD_TRANSITION";
   constructor(

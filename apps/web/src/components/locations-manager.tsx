@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { LocationView, Paginated } from "@loadtopia/shared";
 import { ApiError, apiClient, fieldErrors } from "@/lib/api-client";
+import { ConfirmDialog } from "./dialog";
 import { Alert, Badge, Button, Card, EmptyState, Field, Input, Spinner } from "./ui";
 import { fmtDate } from "@/lib/format";
 
@@ -16,6 +17,7 @@ export function LocationsManager({ initial }: { initial: Paginated<LocationView>
   const [fErr, setFErr] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [deactivating, setDeactivating] = useState<LocationView | null>(null);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   function openCreate() {
@@ -80,12 +82,13 @@ export function LocationsManager({ initial }: { initial: Paginated<LocationView>
   }
 
   async function deactivate(l: LocationView) {
-    if (!window.confirm(`Remove "${l.name ?? l.city}" from the location book?`)) return;
     try {
       const updated = await apiClient<LocationView>(`/locations/${l.id}`, { method: "DELETE" });
       setLocations((ls) => ls.map((x) => (x.id === updated.id ? updated : x)));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not remove location");
+    } finally {
+      setDeactivating(null);
     }
   }
 
@@ -172,7 +175,7 @@ export function LocationsManager({ initial }: { initial: Paginated<LocationView>
                   <Button variant="ghost" onClick={() => openEdit(l)}>
                     Edit
                   </Button>
-                  <Button variant="ghost" onClick={() => deactivate(l)}>
+                  <Button variant="ghost" onClick={() => setDeactivating(l)}>
                     Remove
                   </Button>
                 </div>
@@ -181,6 +184,20 @@ export function LocationsManager({ initial }: { initial: Paginated<LocationView>
           ))}
         </Card>
       )}
+
+      <ConfirmDialog
+        open={deactivating !== null}
+        onOpenChange={(open) => !open && setDeactivating(null)}
+        title="Remove this location?"
+        description={
+          deactivating
+            ? `"${deactivating.name ?? deactivating.city}" will be removed from the location book.`
+            : undefined
+        }
+        confirmLabel="Remove"
+        tone="danger"
+        onConfirm={() => deactivating && deactivate(deactivating)}
+      />
     </div>
   );
 }

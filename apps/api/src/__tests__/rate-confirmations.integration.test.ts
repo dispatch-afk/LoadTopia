@@ -304,7 +304,8 @@ suite("rate confirmations (integration)", () => {
     const { loadId } = await award(s); // still 200 — award committed
 
     const load = await prisma.load.findUniqueOrThrow({ where: { id: loadId } });
-    expect(load.status).toBe("AWARDED");
+    // Milestone 4 Phase 5: acceptance auto-assigns in the same transaction.
+    expect(load.status).toBe("CARRIER_ASSIGNED");
     const before = await prisma.rateConfirmation.findUniqueOrThrow({ where: { loadId } });
     expect(before.status).not.toBe("GENERATED");
     expect(fake.storedKeys()).toHaveLength(0);
@@ -359,13 +360,11 @@ suite("rate confirmations (integration)", () => {
     const loser = await carrier("Loser Co");
     const otherShipper = await shipper("Rival Foods");
 
-    // winning carrier: authorized already at AWARDED (canReadLoad — carrierCompanyId is set at award)
+    // winning carrier: authorized already at award (canReadLoad — carrierCompanyId
+    // is set atomically at award, and Milestone 4 Phase 5 auto-assigns in the
+    // same transaction, so this load is already CARRIER_ASSIGNED here).
     expect((await getRC(winner.cookie, loadId)).statusCode).toBe(200);
     expect((await getRC(s.cookie, loadId)).statusCode).toBe(200);
-
-    // still authorized after assignment
-    await api.inject(authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }));
-    expect((await getRC(winner.cookie, loadId)).statusCode).toBe(200);
 
     // unassigned carrier + cross-company shipper: 404, never 403 (IDOR-safe)
     expect((await getRC(loser.cookie, loadId)).statusCode).toBe(404);
@@ -408,17 +407,24 @@ suite("rate confirmations (integration)", () => {
 
   // ── assignment must never touch the snapshot ─────────────────────
 
-  it("AWARDED → CARRIER_ASSIGNED does not create, resnapshot, or mutate the Rate Confirmation", async () => {
+  it("automatic AWARDED -> CARRIER_ASSIGNED assignment (same transaction as the award) does not create, resnapshot, or mutate the Rate Confirmation", async () => {
     const s = await shipper();
     const { loadId } = await award(s);
     await getRC(s.cookie, loadId); // settle generation
+    const load = await prisma.load.findUniqueOrThrow({ where: { id: loadId } });
+    // Milestone 4 Phase 5: automatic assignment already happened, in the SAME
+    // transaction as the award itself — there is no longer an observable
+    // "AWARDED, not yet assigned" moment for a load awarded this way.
+    expect(load.status).toBe("CARRIER_ASSIGNED");
+    expect(load.assignedAt).not.toBeNull();
     const before = await prisma.rateConfirmation.findUniqueOrThrow({ where: { loadId } });
 
+    // A stray legacy /assign call on an already-assigned load is safely
+    // rejected (409) — never creates a second RC, never mutates the existing one.
     const assign = await api.inject(
       authed(s.cookie, { method: "POST", url: `/api/loads/${loadId}/assign` }),
     );
-    expect(assign.statusCode).toBe(200);
-    expect(assign.json().status).toBe("CARRIER_ASSIGNED");
+    expect(assign.statusCode).toBe(409);
 
     const after = await prisma.rateConfirmation.findMany({ where: { loadId } });
     expect(after).toHaveLength(1);

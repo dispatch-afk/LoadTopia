@@ -1,5 +1,5 @@
 import type { Prisma, PrismaClient } from "@loadtopia/db";
-import { assertCompanyScope, assertPermission, Permission } from "@loadtopia/domain";
+import { assertCompanyPrimaryAuthority, assertCompanyScope, assertPermission, Permission } from "@loadtopia/domain";
 import {
   type AddMemberInput,
   type AuthenticatedActor,
@@ -125,6 +125,16 @@ export class CompaniesService {
       orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
     });
 
+    // Milestone 4 Phase 11: freight-access summary per member, via ONE
+    // bounded query for the whole list — never one facility-scope request
+    // per member (which would be an N+1 as the member list grows).
+    const scopeCounts = await this.prisma.membershipFacilityScope.groupBy({
+      by: ["membershipId"],
+      where: { membershipId: { in: members.map((m) => m.id) } },
+      _count: { locationId: true },
+    });
+    const countByMembership = new Map(scopeCounts.map((r) => [r.membershipId, r._count.locationId]));
+
     return members.map((m) => ({
       membershipId: m.id,
       userId: m.user.id,
@@ -135,6 +145,7 @@ export class CompaniesService {
       isPrimary: m.isPrimary,
       isActive: m.isActive,
       createdAt: m.createdAt.toISOString(),
+      freightAccess: toFreightAccess(countByMembership.get(m.id) ?? 0),
     }));
   }
 
@@ -142,6 +153,14 @@ export class CompaniesService {
    * Add an existing user to the company. There is no invite-email flow in
    * Milestone 1 (that is a notification concern); the target user must already
    * have a LoadTopia account.
+   *
+   * Milestone 4 release correction: adding a member is a company-authority
+   * action (it can grant a new person standing acting-for-the-company
+   * capability), so it requires company-primary/platform-admin authority —
+   * the same `assertCompanyPrimaryAuthority` gate already used for facility
+   * scope, connections, blocks, preferences, and Carrier Groups. Holding
+   * `MEMBERSHIP_MANAGE` alone (granted to every active member) is no longer
+   * sufficient.
    */
   async addMember(
     actor: AuthenticatedActor,
@@ -152,6 +171,7 @@ export class CompaniesService {
     if (!company) throw notFound("Company not found");
     assertCompanyScope(actor, company.id);
     assertPermission(actor, Permission.MEMBERSHIP_MANAGE);
+    assertCompanyPrimaryAuthority(actor);
 
     const user = await this.prisma.user.findUnique({ where: { email: input.email } });
     if (!user) {
@@ -176,6 +196,14 @@ export class CompaniesService {
     return this.memberView(membership.id);
   }
 
+  /**
+   * Change a member's role, or activate/deactivate a membership. Milestone 4
+   * release correction: like `addMember`, this is a company-authority
+   * action (role changes and deactivation directly affect who can act for
+   * the company, including — absent this check — an ordinary member being
+   * able to deactivate the company's own primary/owner) and requires
+   * company-primary/platform-admin authority, not just `MEMBERSHIP_MANAGE`.
+   */
   async updateMembership(
     actor: AuthenticatedActor,
     membershipId: string,
@@ -185,6 +213,7 @@ export class CompaniesService {
     if (!membership) throw notFound("Membership not found");
     assertCompanyScope(actor, membership.companyId);
     assertPermission(actor, Permission.MEMBERSHIP_MANAGE);
+    assertCompanyPrimaryAuthority(actor);
 
     if (input.isActive === false && membership.userId === actor.userId) {
       throw badRequest("You cannot deactivate your own membership");
@@ -218,6 +247,7 @@ export class CompaniesService {
       where: { id: membershipId },
       include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } },
     });
+    const facilityCount = await this.prisma.membershipFacilityScope.count({ where: { membershipId } });
     return {
       membershipId: m.id,
       userId: m.user.id,
@@ -228,6 +258,11 @@ export class CompaniesService {
       isPrimary: m.isPrimary,
       isActive: m.isActive,
       createdAt: m.createdAt.toISOString(),
+      freightAccess: toFreightAccess(facilityCount),
     };
   }
+}
+
+function toFreightAccess(facilityCount: number): { companyWide: boolean; facilityCount: number } {
+  return { companyWide: facilityCount === 0, facilityCount };
 }
