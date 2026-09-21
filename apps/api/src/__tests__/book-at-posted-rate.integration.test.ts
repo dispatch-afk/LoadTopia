@@ -1,10 +1,13 @@
 import type { PrismaClient } from "@loadtopia/db";
+import { FakeStorageProvider } from "@loadtopia/providers";
 import type { FastifyInstance } from "fastify";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { providersWithFakeStorage } from "./helpers";
 import {
   authed,
   createLocation,
   makeApp,
+  makeAppWithProviders,
   makePrisma,
   registerCompany,
   resetDb,
@@ -536,5 +539,143 @@ suite("Book at Posted Rate — commercial agreement (M4 Phase 5, integration)", 
       authed(s2.cookie, { method: "POST", url: `/api/loads/${load2}/assign` }),
     );
     expect(redundant.statusCode).toBe(409);
+  });
+
+  // ── Rate Confirmation generation parity (M4 release correction P1-2) ──
+  //
+  // MarketplaceService previously constructed its internal OffersService
+  // without a Rate Confirmation generator, so the best-effort, post-commit
+  // PDF-generation hook silently never fired for a real Book at Posted Rate
+  // booking (the ONLY production route for that feature) — even though the
+  // atomic commercial acceptance and RC *snapshot* were always correct. This
+  // block uses a FakeStorageProvider (in place of the outer suite's default
+  // mock storage) so the actual generated/stored PDF can be observed.
+  describe("Rate Confirmation generation parity (M4 release correction P1-2)", () => {
+    let fake: FakeStorageProvider;
+
+    beforeEach(async () => {
+      fake = new FakeStorageProvider();
+      api = await makeAppWithProviders(prisma, providersWithFakeStorage(fake).providers);
+    });
+
+    it("Book at Posted Rate now eagerly generates and stores a Rate Confirmation PDF after commit", async () => {
+      const s = await shipper();
+      const c = await carrier("Booking Co");
+      const loadId = await publishedLoad(s, "4000.00");
+
+      const res = await book(c, loadId, "4000.00");
+      expect(res.statusCode).toBe(200);
+
+      const rc = await prisma.rateConfirmation.findUniqueOrThrow({ where: { loadId } });
+      expect(rc.status).toBe("GENERATED");
+      expect(rc.storageKey).toBe(`rate-confirmations/${loadId}/${rc.id}.pdf`);
+      expect(fake.storedKeys()).toEqual([rc.storageKey]);
+      const stored = fake.getStored(rc.storageKey!)!;
+      expect(stored.contentType).toBe("application/pdf");
+    });
+
+    it("offer acceptance still invokes the same eager generation path (parity preserved, not a regression)", async () => {
+      const s = await shipper();
+      const c = await carrier("Negotiator Co");
+      const loadId = await publishedLoad(s, "4000.00");
+      const thread = await offer(c, loadId, "3800.00");
+      const roundId = thread.json().rounds[0].id;
+
+      const accept = await api.inject(
+        authed(s.cookie, { method: "POST", url: `/api/offers/rounds/${roundId}/accept` }),
+      );
+      expect(accept.statusCode).toBe(200);
+
+      const rc = await prisma.rateConfirmation.findUniqueOrThrow({ where: { loadId } });
+      expect(rc.status).toBe("GENERATED");
+      expect(fake.storedKeys()).toEqual([rc.storageKey]);
+    });
+
+    it("a storage outage during booking never rolls back the award, the acceptance, or the RC snapshot", async () => {
+      fake.simulateOutage();
+      const s = await shipper();
+      const c = await carrier("Booking Co");
+      const loadId = await publishedLoad(s, "4000.00");
+
+      const res = await book(c, loadId, "4000.00");
+      expect(res.statusCode).toBe(200); // the award itself is unaffected by the outage
+
+      const load = await prisma.load.findUniqueOrThrow({ where: { id: loadId } });
+      expect(load.status).toBe("CARRIER_ASSIGNED");
+      expect(load.carrierCompanyId).toBe(c.companyId);
+      expect(load.bookedRate?.toFixed(2)).toBe("4000.00");
+
+      const thread = await prisma.offerThread.findFirstOrThrow({ where: { loadId } });
+      expect(thread.status).toBe("ACCEPTED");
+      expect(thread.originType).toBe("POSTED_RATE_BOOKING");
+
+      const rc = await prisma.rateConfirmation.findUniqueOrThrow({ where: { loadId } });
+      expect(rc.agreedRate.toFixed(2)).toBe("4000.00"); // snapshot committed regardless
+      expect(rc.status).not.toBe("GENERATED"); // PDF generation itself failed
+      expect(fake.storedKeys()).toHaveLength(0);
+    });
+
+    it("the RC snapshot remains available (and later completes generation) after a booking-time generation failure", async () => {
+      fake.simulateOutage();
+      const s = await shipper();
+      const c = await carrier("Booking Co");
+      const loadId = await publishedLoad(s, "4000.00");
+      await book(c, loadId, "4000.00");
+
+      // The commercial snapshot is already retrievable even before the PDF exists.
+      const beforeRecovery = await api.inject(
+        authed(s.cookie, { method: "GET", url: `/api/loads/${loadId}/rate-confirmation` }),
+      );
+      expect(beforeRecovery.statusCode).toBe(200);
+      expect(beforeRecovery.json().agreedRate).toBe("4000.00");
+      expect(beforeRecovery.json().documentPending).toBe(true);
+
+      // Storage recovers; lazy retrieval completes generation to the same key.
+      fake.simulateOutage(false);
+      const afterRecovery = await api.inject(
+        authed(s.cookie, { method: "GET", url: `/api/loads/${loadId}/rate-confirmation` }),
+      );
+      expect(afterRecovery.statusCode).toBe(200);
+      expect(afterRecovery.json().documentPending).toBe(false);
+      const rc = await prisma.rateConfirmation.findUniqueOrThrow({ where: { loadId } });
+      expect(rc.status).toBe("GENERATED");
+    });
+
+    it("no Rate Confirmation is ever generated for a losing carrier when a booking wins", async () => {
+      const s = await shipper();
+      const winner = await carrier("Winner Co");
+      const loser = await carrier("Loser Co");
+      const loadId = await publishedLoad(s, "4000.00");
+
+      await offer(loser, loadId, "3500.00");
+      const res = await book(winner, loadId, "4000.00");
+      expect(res.statusCode).toBe(200);
+
+      // Exactly one RC exists, for the winner — generation is never attempted
+      // for the loser's (rejected) thread.
+      const rcs = await prisma.rateConfirmation.findMany({ where: { loadId } });
+      expect(rcs).toHaveLength(1);
+      expect(rcs[0]!.carrierCompanyId).toBe(winner.companyId);
+      expect(fake.storedKeys()).toEqual([rcs[0]!.storageKey]);
+
+      const loserThread = await prisma.offerThread.findFirstOrThrow({
+        where: { loadId, carrierCompanyId: loser.companyId },
+      });
+      expect(loserThread.status).toBe("REJECTED");
+    });
+
+    it("existing double-award/race protections are unaffected by the RC-generation wiring", async () => {
+      const s = await shipper();
+      const c1 = await carrier("Racer One");
+      const c2 = await carrier("Racer Two");
+      const loadId = await publishedLoad(s, "4000.00");
+
+      const [a, b] = await Promise.all([book(c1, loadId, "4000.00"), book(c2, loadId, "4000.00")]);
+      expect([a.statusCode, b.statusCode].sort()).toEqual([200, 409]);
+
+      const rcs = await prisma.rateConfirmation.findMany({ where: { loadId } });
+      expect(rcs).toHaveLength(1);
+      expect(fake.storedKeys()).toEqual([rcs[0]!.storageKey]);
+    });
   });
 });

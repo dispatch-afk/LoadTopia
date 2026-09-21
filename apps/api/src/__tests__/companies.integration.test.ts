@@ -2,6 +2,7 @@ import type { PrismaClient } from "@loadtopia/db";
 import type { FastifyInstance } from "fastify";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+  addNonPrimaryMember,
   authed,
   makeApp,
   makePrisma,
@@ -315,6 +316,166 @@ suite("companies + memberships + company switching (integration)", () => {
       const me = await api.inject(authed(owner.cookie, { method: "GET", url: "/api/auth/me" }));
       expect(me.statusCode).toBe(200);
       expect(me.json().activeCompanyId).toBe(owner.companyId);
+    });
+  });
+
+  // Milestone 4 release correction (P1-1): adding a member, changing a
+  // member's role, and activating/deactivating a membership all require
+  // company-primary/platform-admin authority — `membership:manage` alone
+  // (held by every active member) is no longer sufficient.
+  describe("membership authority (M4 release correction)", () => {
+    /** `addNonPrimaryMember` requires the target email to already have a
+     *  LoadTopia account — register a throwaway one first, matching the
+     *  established pattern used elsewhere in this suite. */
+    async function addMember(primary: { cookie: string; companyId: string }, email: string) {
+      const throwaway = await registerCompany(api, { email, companyName: `throwaway-${email}` });
+      return addNonPrimaryMember(api, primary.cookie, primary.companyId, {
+        email: throwaway.email,
+        role: "SHIPPER",
+      });
+    }
+
+    it("company-primary/admin can add a member, change a role, and deactivate a membership", async () => {
+      const owner = await registerCompany(api, { companyName: "Authority Co" });
+      await addMember(owner, "ordinary@it.test");
+      const ordinaryId = await prisma.membership
+        .findFirstOrThrow({ where: { companyId: owner.companyId, userId: { not: owner.userId } } })
+        .then((m) => m.id);
+
+      const roleChange = await api.inject(
+        authed(owner.cookie, {
+          method: "PATCH",
+          url: `/api/memberships/${ordinaryId}`,
+          payload: { role: "CARRIER" },
+        }),
+      );
+      expect(roleChange.statusCode).toBe(200);
+      expect(roleChange.json().role).toBe("CARRIER");
+
+      const deactivate = await api.inject(
+        authed(owner.cookie, {
+          method: "PATCH",
+          url: `/api/memberships/${ordinaryId}`,
+          payload: { isActive: false },
+        }),
+      );
+      expect(deactivate.statusCode).toBe(200);
+      expect(deactivate.json().isActive).toBe(false);
+    });
+
+    it("an ordinary active member cannot add a member", async () => {
+      const owner = await registerCompany(api, { companyName: "Authority Co 2" });
+      const ordinaryCookie = await addMember(owner, "ordinary2@it.test");
+
+      const res = await api.inject(
+        authed(ordinaryCookie, {
+          method: "POST",
+          url: `/api/companies/${owner.companyId}/members`,
+          payload: { email: "friend@it.test", role: "SHIPPER" },
+        }),
+      );
+      expect(res.statusCode).toBe(403);
+    });
+
+    it("an ordinary active member cannot change another member's role", async () => {
+      const owner = await registerCompany(api, { companyName: "Authority Co 3" });
+      const ordinaryCookie = await addMember(owner, "ordinary3@it.test");
+      // A third member, whose role the ordinary member will try to change.
+      await addMember(owner, "target3@it.test");
+      const targetId = await prisma.membership
+        .findFirstOrThrow({ where: { companyId: owner.companyId, user: { email: "target3@it.test" } } })
+        .then((m) => m.id);
+
+      const res = await api.inject(
+        authed(ordinaryCookie, {
+          method: "PATCH",
+          url: `/api/memberships/${targetId}`,
+          payload: { role: "CARRIER" },
+        }),
+      );
+      expect(res.statusCode).toBe(403);
+      const unchanged = await prisma.membership.findUniqueOrThrow({ where: { id: targetId } });
+      expect(unchanged.role).toBe("SHIPPER");
+    });
+
+    it("an ordinary active member cannot deactivate another membership", async () => {
+      const owner = await registerCompany(api, { companyName: "Authority Co 4" });
+      const ordinaryCookie = await addMember(owner, "ordinary4@it.test");
+      await addMember(owner, "target4@it.test");
+      const targetId = await prisma.membership
+        .findFirstOrThrow({ where: { companyId: owner.companyId, user: { email: "target4@it.test" } } })
+        .then((m) => m.id);
+
+      const res = await api.inject(
+        authed(ordinaryCookie, {
+          method: "PATCH",
+          url: `/api/memberships/${targetId}`,
+          payload: { isActive: false },
+        }),
+      );
+      expect(res.statusCode).toBe(403);
+      const unchanged = await prisma.membership.findUniqueOrThrow({ where: { id: targetId } });
+      expect(unchanged.isActive).toBe(true);
+    });
+
+    it("an ordinary member cannot deactivate or alter the primary owner", async () => {
+      const owner = await registerCompany(api, { companyName: "Authority Co 5" });
+      const ordinaryCookie = await addMember(owner, "ordinary5@it.test");
+      const ownerMembershipId = await prisma.membership
+        .findFirstOrThrow({ where: { companyId: owner.companyId, userId: owner.userId } })
+        .then((m) => m.id);
+
+      const deactivateOwner = await api.inject(
+        authed(ordinaryCookie, {
+          method: "PATCH",
+          url: `/api/memberships/${ownerMembershipId}`,
+          payload: { isActive: false },
+        }),
+      );
+      expect(deactivateOwner.statusCode).toBe(403);
+
+      const changeOwnerRole = await api.inject(
+        authed(ordinaryCookie, {
+          method: "PATCH",
+          url: `/api/memberships/${ownerMembershipId}`,
+          payload: { role: "CARRIER" },
+        }),
+      );
+      expect(changeOwnerRole.statusCode).toBe(403);
+
+      const unchanged = await prisma.membership.findUniqueOrThrow({ where: { id: ownerMembershipId } });
+      expect(unchanged.isActive).toBe(true);
+      expect(unchanged.role).toBe("SHIPPER");
+    });
+
+    it("cross-company membership management remains denied regardless of authority (404)", async () => {
+      const owner = await registerCompany(api, { companyName: "Authority Co 6" });
+      const outsider = await registerCompany(api, { companyName: "Outsider Co", email: "outsider6@it.test" });
+
+      const res = await api.inject(
+        authed(outsider.cookie, {
+          method: "POST",
+          url: `/api/companies/${owner.companyId}/members`,
+          payload: { email: "friend@it.test", role: "SHIPPER" },
+        }),
+      );
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("existing self-deactivation and last-active-member protections remain intact for the primary", async () => {
+      const owner = await registerCompany(api, { companyName: "Authority Co 7" });
+      const ownMembershipId = await prisma.membership
+        .findFirstOrThrow({ where: { userId: owner.userId, companyId: owner.companyId } })
+        .then((m) => m.id);
+
+      const selfOff = await api.inject(
+        authed(owner.cookie, {
+          method: "PATCH",
+          url: `/api/memberships/${ownMembershipId}`,
+          payload: { isActive: false },
+        }),
+      );
+      expect(selfOff.statusCode).toBe(400);
     });
   });
 });

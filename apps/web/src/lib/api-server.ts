@@ -1,9 +1,19 @@
 import "server-only";
 import { cookies } from "next/headers";
 import type { ApiErrorBody } from "@loadtopia/shared";
+import { getApiOrigin } from "./api-origin.mjs";
 
-const API_ORIGIN = process.env.API_ORIGIN ?? "http://localhost:4000";
 const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME ?? "loadtopia_session";
+
+// Milestone 4 release correction (P1-4): `getApiOrigin()` is only ever
+// called from inside `apiServer()`'s body below — a genuine per-request code
+// path — never at this module's top level. `next build`'s "Collecting page
+// data" step imports (and therefore executes the top-level code of) modules
+// reachable from a page, so a module-scope resolution call here previously
+// broke the build itself whenever API_ORIGIN was unset. `getApiOrigin()` is
+// shared with the `/api/*` Route Handler proxy (see `api-proxy.ts`) so both
+// real-traffic paths resolve and validate API_ORIGIN exactly once, the same
+// way, only at genuine runtime.
 
 export class ApiError extends Error {
   constructor(
@@ -24,7 +34,7 @@ export async function apiServer<T>(
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE)?.value;
 
-  const url = new URL(`${API_ORIGIN}${path}`);
+  const url = new URL(`${getApiOrigin()}${path}`);
   for (const [k, v] of Object.entries(init.query ?? {})) {
     if (v !== undefined) url.searchParams.set(k, String(v));
   }

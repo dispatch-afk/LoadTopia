@@ -29,6 +29,7 @@ import { isLoadVisibleToCarrier } from "../loads/audience-access";
 import { resolveAcceptedShipperIds, resolveBlockedShipperIds } from "../loads/audience.query";
 import { OffersService } from "../offers/offers.service";
 import { threadSummaryInclude, toThreadSummary } from "../offers/offer.serializer";
+import type { RateConfirmationGenerator } from "../rate-confirmations/rate-confirmation.service";
 import {
   marketplaceLoadInclude,
   METERS_PER_MILE,
@@ -47,8 +48,21 @@ type CarrierCtx = Awaited<ReturnType<typeof loadCarrierEligibilityContext>>;
 export class MarketplaceService {
   private readonly offers: OffersService;
 
-  constructor(private readonly prisma: PrismaClient) {
-    this.offers = new OffersService(prisma);
+  /**
+   * Milestone 4 release correction (P1-2): `rateConfirmations` is passed
+   * through to the internal {@link OffersService} exactly as
+   * `offers.routes.ts` already does for negotiated acceptance, so Book at
+   * Posted Rate gets the same best-effort, post-commit Rate Confirmation
+   * PDF generation as offer acceptance. Optional (not required) so existing
+   * callers/tests that only need the atomic commercial-acceptance behavior
+   * itself are unaffected; `OffersService` already treats a missing
+   * generator as "skip the post-commit hook," never as an error.
+   */
+  constructor(
+    private readonly prisma: PrismaClient,
+    rateConfirmations?: RateConfirmationGenerator,
+  ) {
+    this.offers = new OffersService(prisma, rateConfirmations);
   }
 
   /** Board access: must be an eligible carrier. Returns its eligibility context. */

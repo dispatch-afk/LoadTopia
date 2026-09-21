@@ -8,6 +8,7 @@ import {
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { writeAudit } from "../../lib/audit";
+import { RateConfirmationService } from "../rate-confirmations/rate-confirmation.service";
 import { MarketplaceService } from "./marketplace.service";
 
 const idParam = z.object({ id: uuidSchema });
@@ -25,7 +26,12 @@ const idParam = z.object({ id: uuidSchema });
  *   GET  /marketplace/shipments          carrier "My Shipments" (Milestone 4 Phase 5)
  */
 export async function marketplaceRoutes(app: FastifyInstance): Promise<void> {
-  const service = new MarketplaceService(app.prisma);
+  // Milestone 4 release correction (P1-2): wire the same Rate Confirmation
+  // generator offers.routes.ts uses, so Book at Posted Rate gets the
+  // identical best-effort, post-commit PDF-generation path as negotiated
+  // offer acceptance (previously silently skipped for every real booking).
+  const rateConfirmations = new RateConfirmationService(app.prisma, app.providers.storage, app.log);
+  const service = new MarketplaceService(app.prisma, rateConfirmations);
 
   const writeLimit = {
     rateLimit: {
