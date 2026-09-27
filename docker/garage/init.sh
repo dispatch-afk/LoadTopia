@@ -22,14 +22,19 @@ ok(){ echo "   [OK]   $1"; }; fail(){ echo "   [FAIL] $1"; exit 1; }
 for i in $(seq 1 30); do g status >/dev/null 2>&1 && break; sleep 2; [ "$i" = 30 ] && fail "garage not responding"; done
 
 # 1. layout (single node, 1 zone). Capacity is a weight, not a quota; 100G is fine on a 900G disk.
-if g layout show 2>/dev/null | grep -qE '^\s*[0-9a-f]{16}\s+dc1'; then ok "layout already assigned"
-else
-  NODE=$(g status | awk '/HEALTHY NODES/{f=1;next} f && /^[0-9a-f]{16}/{print $1; exit}')
-  [ -n "$NODE" ] || NODE=$(g status | grep -oE '^[0-9a-f]{16}' | head -1)
+#    Idempotency: `garage status` prints "NO ROLE ASSIGNED" for a node that has no layout role yet.
+if g status 2>/dev/null | grep -q "NO ROLE ASSIGNED"; then
+  NODE=$(g status 2>/dev/null | grep -oE '\b[0-9a-f]{16}\b' | head -1)
   [ -n "$NODE" ] || { g status; fail "could not find node id"; }
   g layout assign -z dc1 -c 100G "$NODE" || fail "layout assign"
-  g layout apply --version 1 || fail "layout apply"
-  ok "layout assigned to node $NODE"
+  # next version = current version + 1 (0 when fresh)
+  CUR=$(g layout show 2>/dev/null | grep -oiE 'layout version:? *[0-9]+' | grep -oE '[0-9]+$' | head -1); CUR=${CUR:-0}
+  g layout apply --version $((CUR+1)) || fail "layout apply"
+  ok "layout assigned to node $NODE (version $((CUR+1)))"
+else
+  ok "layout already assigned"
+  # discard any staged-but-uncommitted role changes left by an earlier run
+  if g layout show 2>/dev/null | grep -qi "staged"; then g layout revert --yes 2>/dev/null || g layout revert 2>/dev/null || true; fi
 fi
 
 # 2. access key (imported so the API's env vars and Garage agree)
