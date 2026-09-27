@@ -17,7 +17,7 @@ describes how to package, expose, persist, and back it up.
 | App processes | from source: `pnpm dev` (`:3000` / `:4000`) | built images (`apps/api/Dockerfile`, `apps/web/Dockerfile`) |
 | Env file | `.env` | `.env.prod` |
 | Volumes | `loadtopia_pgdata` | `loadtopia_prod_pgdata`, `loadtopia_prod_minio`, `loadtopia_prod_caddy_*` |
-| Exposure | `localhost` | Tailscale IP only (`TS_IP`), TLS via Caddy |
+| Exposure | `localhost` | Cloudflare Tunnel only (outbound connector); nothing published on the host |
 | Providers | all `mock` | `mock` except `STORAGE_PROVIDER=s3` (MinIO) |
 
 They never share a volume, a port, or an env file. `docker compose down -v` on
@@ -35,54 +35,85 @@ arm64 (no musl-arm64 engine in `binaryTargets`).
 ## 3. Network topology (production)
 
 ```
-tailnet device ──HTTPS──▶ Caddy (binds TS_IP only)
-                            ├─ :443   → web:3000    (Next.js; proxies /api/* to API_ORIGIN at request time)
-                            ├─ :8443  → api:4000    (Fastify; API_ORIGIN for the web container)
-                            └─ :9443  → minio:9000  (S3 API; browser presigned POST/GET)
-              internal only: postgres:5432, minio:9001 (console, not published)
+browser ──HTTPS──▶ Cloudflare edge (TLS, WAF, Access policy on app.*) ──tunnel──▶ cloudflared (container)
+                                                                                     │ plain HTTP, internal network
+                                                                                     ▼
+                                                                                   Caddy :80  (routes by Host)
+                                                                                     ├─ app.<domain>   → web:3000
+                                                                                     ├─ api.<domain>   → api:4000
+                                                                                     └─ files.<domain> → minio:9000
+                              internal only: postgres:5432, minio:9001 (console, never published)
 ```
 
-All three origins share one hostname (`LT_HOST`, the machine's MagicDNS name)
-and one Let's Encrypt certificate that `tailscaled` obtains and renews; Caddy
-reads it through the mounted `tailscaled.sock` (`tls { get_certificate tailscale }`).
-Inside the Docker network, `LT_HOST` is a network alias of the Caddy container,
-so `web → API_ORIGIN` and `api → STORAGE_S3_ENDPOINT` resolve internally while
-TLS SNI still matches the certificate.
+Nothing listens on any host interface: `cloudflared` dials **out** to Cloudflare
+and Cloudflare forwards requests down the tunnel. The GX10's public IP is
+never exposed and no router port is opened. TLS is Cloudflare's (Universal SSL
+on your domain); Caddy serves plain HTTP to the tunnel only.
 
-Why the API is on `:8443` rather than a path: `apps/web/src/lib/api-origin.mjs`
-requires `API_ORIGIN` to be a **bare `https://` origin** in production, and the
-web app cannot point at itself (its own `/api/*` route handler is the proxy).
+**Cloudflare Access** is applied to `app.<domain>` only. Users must pass a
+browser-based identity check (one-time code by email to an allow-listed
+address, or Google/Microsoft login) before they ever see the LoadTopia login
+page — a second factor with nothing to install. `api.<domain>` and
+`files.<domain>` carry **no** Access policy on purpose: the web container calls
+`api.` server-side (an Access cookie would block it) and the browser uploads
+to `files.` with presigned URLs. Both remain protected by the application's own
+session auth / signed URLs, plus Cloudflare's WAF and rate limiting.
 
-## 4. Prerequisites (one-time)
+**Hairpin note.** `web → API_ORIGIN (api.<domain>)` and
+`api → STORAGE_S3_ENDPOINT (files.<domain>)` resolve through public DNS and
+travel out to Cloudflare and back down the tunnel. This is correct and simple,
+costs a few tens of milliseconds per server-side call, and keeps the app's
+"API_ORIGIN must be https://" rule satisfied with no code change. An internal
+short-cut (Caddy internal CA + `NODE_EXTRA_CA_CERTS`) is a later optimisation.
 
-1. Tailscale installed and joined (`sudo tailscale up`). In the tailnet admin
-   console (DNS page) enable **MagicDNS** and **HTTPS Certificates**.
-   Verify: `sudo tailscale cert <machine>.<tailnet>.ts.net` succeeds.
-2. Docker Engine + Compose v2, user in the `docker` group.
-3. Repo cloned at the release you intend to run (`git describe --tags`).
+## 4. One-time Cloudflare setup
+
+1. **Domain on Cloudflare.** Add the site at dash.cloudflare.com (Free plan),
+   change the nameservers at your registrar to the two Cloudflare gives you,
+   wait for "Active". SSL/TLS mode: **Full** (Cloudflare ↔ tunnel is encrypted
+   regardless).
+2. **Tunnel.** Zero Trust dashboard → Networks → Tunnels → *Create a tunnel* →
+   Cloudflared → name it `loadtopia-gx10`. On the *Install connector* step copy
+   the **token** (the long string after `--token`) into `.env.prod` as
+   `CF_TUNNEL_TOKEN`. Skip the install commands — the compose stack runs it.
+3. **Public hostnames** (same tunnel → *Public Hostname* tab), three entries,
+   all with **Service = HTTP, URL = `caddy:80`**:
+   `app.<domain>`, `api.<domain>`, `files.<domain>`. Cloudflare creates the
+   DNS records for you.
+4. **Access policy.** Zero Trust → Access → Applications → *Add an application*
+   → Self-hosted → domain `app.<domain>` → policy *Allow* with rule
+   *Emails* = the people you invite (or *Emails ending in* `@yourcompany.com`).
+   Authentication → *One-time PIN* is on by default; add Google/Microsoft
+   under Settings → Authentication if you prefer. Session duration as you like.
+5. **Optional hardening** (Security → WAF → Rate limiting rules): e.g. limit
+   `api.<domain>/api/auth/*` to 10 requests/minute per IP; and a custom rule
+   blocking `api.<domain>` unless `cf.connecting_ip` is the GX10's public IP
+   (only the web container needs that host).
 
 ## 5. First deployment
 
 ```bash
-cp .env.prod.example .env.prod          # fill LT_HOST, TS_IP, secrets, register gate
+cp .env.prod.example .env.prod          # fill LT_DOMAIN, CF_TUNNEL_TOKEN, secrets
 chmod 600 .env.prod
 DC="docker compose -f docker-compose.prod.yml --env-file .env.prod"
-$DC build
+$DC pull && $DC build
 $DC up -d postgres minio                 # DB + storage first
 $DC --profile migrate run --rm migrate   # apply committed migrations (one-shot)
-$DC up -d                                # api, web, caddy, minio-init (bucket)
+$DC up -d                                # api, web, caddy, cloudflared, minio-init (bucket)
 $DC ps
 ```
 
-Verify: `https://LT_HOST/login` returns 200 with HSTS headers;
-`https://LT_HOST:8443/api/health/ready` returns 200; `https://LT_HOST/register`
-returns 401 (basic-auth gate) until you remove that block from the Caddyfile.
+Verify: `https://app.<domain>/login` shows the Cloudflare Access prompt first,
+then (after the one-time code) the LoadTopia login page, with HSTS headers;
+`https://api.<domain>/api/health/ready` returns 200; the tunnel shows
+*Healthy* in the Zero Trust dashboard.
 
 `GET /api/health` (not `/ready`) returns **503 while any provider is mock** —
 that is by design; use `/api/health/ready` for monitoring.
 
 No seed is run in production (`prisma/seed.ts` refuses `NODE_ENV=production`).
-Create the first accounts through `/register`.
+Create the first accounts through `/register` — reachable only by people your
+Access policy allows.
 
 ## 6. Upgrades
 
@@ -127,31 +158,34 @@ with scripts is the next documentation deliverable.)
 ## 9. Security posture (what this stack enforces)
 
 - API and web run with `NODE_ENV=production`; `SESSION_COOKIE_SECURE=true`
-  (the API refuses to boot otherwise); `CORS_ORIGINS` = exactly the web origin.
-- Postgres and MinIO are never published to a host interface.
-- Caddy binds only to the Tailscale IP; the LAN and the internet see nothing.
-  `trustProxy: true` in the API is therefore safe (Caddy is the only path in).
-- Caddy adds HSTS, `nosniff`, `X-Frame-Options: DENY`, referrer and
-  permissions policies for the web app (the app sets none itself) and caps
-  request bodies (2 MB app, 30 MB storage — document uploads are ≤ 25 MiB).
-- `/register` and `POST /api/auth/register` sit behind HTTP basic auth until
-  the owner opens signups (delete the `@register` block in the Caddyfile).
-- Secrets live only in `.env.prod` (mode 600, git-ignored). Dev credentials
-  (`loadtopia_dev_pw`) are never reused.
+  (the API refuses to boot otherwise); `CORS_ORIGINS` = exactly `https://app.<domain>`.
+- No container publishes a port on the host. Postgres and MinIO are internal
+  only; Caddy is reachable only from `cloudflared`; ingress is outbound-only.
+- Cloudflare Access (email OTP / SSO allow-list) gates `app.<domain>` before
+  the application login — a second factor with nothing to install.
+- Caddy forwards `CF-Connecting-IP` as `X-Forwarded-For`, so the API's
+  per-IP rate limits and audit-log IPs reflect real visitors. `trustProxy: true`
+  is safe because Caddy/cloudflared is the only path in.
+- Caddy adds HSTS, `nosniff`, `X-Frame-Options: DENY`, referrer and permissions
+  policies for the web app (the app sets none itself) and caps request bodies
+  (2 MB app/api, 30 MB storage — document uploads are ≤ 25 MiB).
+- Cloudflare WAF, bot and DDoS protection apply to all three hostnames.
+- Secrets live only in `.env.prod` (mode 600, git-ignored): DB and MinIO
+  credentials are random per install; the tunnel token is a secret too.
+  Dev credentials (`loadtopia_dev_pw`) are never reused.
 - MinIO root credentials are used by the API for the PoC; before real
   production, create a scoped MinIO user/policy (`GetObject`, `PutObject`,
   `HeadObject` on the one bucket) and put those in `STORAGE_S3_*`.
 
-Host-level recommendations (outside this repo): `ufw` default-deny with SSH
-from the LAN only and all traffic on `tailscale0`; SSH key-only; `fail2ban`;
-`unattended-upgrades`; Docker log rotation; off-host backups; rotate any
-personal GitHub token on the host for a read-only deploy key.
+Host-level (outside this repo): `ufw` default-deny inbound (SSH from LAN and
+from your Tailscale admin network only), SSH key-only, `fail2ban`,
+`unattended-upgrades`, Docker log rotation, off-host backups, and a read-only
+deploy key instead of a personal GitHub token on the host.
 
-## 10. Going beyond the tailnet
+## 10. Changing the edge later
 
-To publish on your own domain later, keep this stack and change only the edge:
-either a Cloudflare Tunnel (no inbound ports; optional Cloudflare Access login
-gate) pointing at Caddy, or port-forward 443 to Caddy with a Let's Encrypt
-`tls` block for the public hostname. `LT_HOST`, `CORS_ORIGINS`, `API_ORIGIN`
-and `STORAGE_S3_ENDPOINT` then move to the public hostname. Nothing in the
-application changes.
+The application never learns how it is exposed. To move from Cloudflare to a
+direct public host (port-forward 443 → Caddy with Let's Encrypt), or to a LAN-only
+setup, change only the `caddy`/`cloudflared` services and the three hostname
+variables (`CORS_ORIGINS`, `API_ORIGIN`, `STORAGE_S3_ENDPOINT`). Nothing in
+`apps/` or `packages/` changes.

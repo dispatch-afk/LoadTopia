@@ -2,7 +2,8 @@
 #
 # Deliberately separate from docker-compose.yml (dev):
 #   - project name `loadtopia-prod`, volume names `loadtopia_prod_*`
-#   - nothing publishes to the LAN; Caddy binds ONLY to the Tailscale IP
+#   - NOTHING is published on any host interface: ingress is a Cloudflare Tunnel
+#     (outbound-only cloudflared); TLS terminates at Cloudflare's edge
 #   - Postgres and MinIO are reachable only on the internal network
 #   - migrations run as a one-shot job (`--profile migrate`), never at API start
 #
@@ -32,7 +33,7 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    image: quay.io/minio/minio:latest   # Docker Hub minio/minio is no longer pullable (2026-09); pin to the digest phase4c records
     container_name: loadtopia-prod-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -40,7 +41,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
       # Browser talks to the S3 API directly (presigned POST/GET) — allow ONLY the web origin.
-      MINIO_API_CORS_ALLOW_ORIGIN: https://${LT_HOST:?}
+      MINIO_API_CORS_ALLOW_ORIGIN: https://app.${LT_DOMAIN:?set in .env.prod}
     volumes:
       - loadtopia_prod_minio:/data
     healthcheck:
@@ -51,7 +52,7 @@ services:
 
   # One-shot: create the private bucket. Idempotent.
   minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: quay.io/minio/mc:latest
     depends_on:
       minio:
         condition: service_healthy
@@ -95,7 +96,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_URL: postgresql://loadtopia:${POSTGRES_PASSWORD}@postgres:5432/loadtopia?schema=public
       # Browser origin (web). Must match exactly.
-      CORS_ORIGINS: https://${LT_HOST}
+      CORS_ORIGINS: https://app.${LT_DOMAIN}
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-loadtopia_session}
       SESSION_COOKIE_SECURE: "true"
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
@@ -110,7 +111,7 @@ services:
       GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
       STORAGE_PROVIDER: s3
       # Public (browser-reachable) S3 endpoint — presigned URLs embed it.
-      STORAGE_S3_ENDPOINT: https://${LT_HOST}:9443
+      STORAGE_S3_ENDPOINT: https://files.${LT_DOMAIN}
       STORAGE_S3_REGION: us-east-1
       STORAGE_S3_BUCKET: ${STORAGE_S3_BUCKET:-loadtopia-prod}
       STORAGE_S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
@@ -137,9 +138,9 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      # Must be https:// and a bare origin (src/lib/api-origin.mjs). Resolves to
-      # the caddy container via the network alias below.
-      API_ORIGIN: https://${LT_HOST}:8443
+      # Must be https:// and a bare origin (src/lib/api-origin.mjs). Resolves via
+      # public DNS -> Cloudflare -> tunnel -> caddy -> api (hairpin; see SELF_HOSTING.md).
+      API_ORIGIN: https://api.${LT_DOMAIN}
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-loadtopia_session}
     depends_on:
       api:
@@ -149,31 +150,27 @@ services:
     image: caddy:2
     container_name: loadtopia-prod-caddy
     restart: unless-stopped
-    # Bind ONLY on the Tailscale interface — invisible to the LAN and the internet.
-    ports:
-      - "${TS_IP:?}:443:443"
-      - "${TS_IP}:8443:8443"
-      - "${TS_IP}:9443:9443"
+    # No `ports:` — reachable only from cloudflared on the internal network.
     environment:
-      LT_HOST: ${LT_HOST}
-      LT_REGISTER_USER: ${LT_REGISTER_USER:?}
-      LT_REGISTER_HASH: ${LT_REGISTER_HASH:?}
+      LT_DOMAIN: ${LT_DOMAIN}
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - loadtopia_prod_caddy_data:/data
       - loadtopia_prod_caddy_config:/config
-      # Lets Caddy fetch/renew the tailnet certificate from tailscaled.
-      - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock
-    networks:
-      default:
-        aliases:
-          # Containers (web -> API_ORIGIN, api -> STORAGE_S3_ENDPOINT) resolve the
-          # public hostname to Caddy internally; TLS SNI still matches the cert.
-          - ${LT_HOST}
     depends_on:
       - web
       - api
       - minio
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: loadtopia-prod-cloudflared
+    restart: unless-stopped
+    # Outbound-only connector. Public hostnames -> http://caddy:80 are configured
+    # in the Cloudflare Zero Trust dashboard (Networks > Tunnels), see SELF_HOSTING.md §4.
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN:?set in .env.prod}
+    depends_on:
+      - caddy
 
 volumes:
   loadtopia_prod_pgdata:

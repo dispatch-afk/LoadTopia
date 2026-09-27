@@ -72,7 +72,7 @@ No `NEXT_PUBLIC_*` variables exist; nothing is exposed to the browser.
 
 ## Self-hosting compose variables (`.env.prod`, consumed by `docker-compose.prod.yml` only)
 
-`LT_HOST` (tailnet hostname), `TS_IP` (Tailscale IPv4 to bind Caddy), `POSTGRES_PASSWORD`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `LT_REGISTER_USER` / `LT_REGISTER_HASH` (basic-auth gate on `/register`), optional `STORAGE_S3_BUCKET`, `SESSION_COOKIE_NAME`, `SESSION_TTL_HOURS`, `LOG_LEVEL`, `ROUTING_PROVIDER`, `GEOCODING_PROVIDER`, `GOOGLE_MAPS_API_KEY`.
+`LT_DOMAIN` (your Cloudflare-managed domain; the stack uses `app.`, `api.`, `files.` subdomains), `CF_TUNNEL_TOKEN` (Cloudflare Tunnel connector token — secret), `POSTGRES_PASSWORD`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, optional `STORAGE_S3_BUCKET`, `SESSION_COOKIE_NAME`, `SESSION_TTL_HOURS`, `LOG_LEVEL`, `ROUTING_PROVIDER`, `GEOCODING_PROVIDER`, `GOOGLE_MAPS_API_KEY`.
 
 ## Known template issue
 

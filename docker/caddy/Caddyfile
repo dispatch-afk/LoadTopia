@@ -1,14 +1,16 @@
-# LoadTopia self-hosted reverse proxy (Caddy 2).
-# Terminates TLS for three origins on ONE tailnet hostname, all with the
-# Let's Encrypt certificate that tailscaled obtains for this machine
-# (tls get_certificate tailscale — needs the tailscaled socket mounted and
-# "HTTPS Certificates" enabled in the tailnet DNS settings).
+# LoadTopia self-hosted reverse proxy (Caddy 2) — behind a Cloudflare Tunnel.
 #
-#   https://{LT_HOST}        -> web  (Next.js)        browser-facing app
-#   https://{LT_HOST}:8443   -> api  (Fastify)        web server -> API (API_ORIGIN)
-#   https://{LT_HOST}:9443   -> minio S3 API          browser presigned uploads/downloads
+# TLS is terminated at Cloudflare's edge; cloudflared delivers plain HTTP to
+# this container over the (encrypted) tunnel. Caddy therefore serves http://
+# only, routes by Host header, adds security headers, caps request bodies, and
+# forwards the real client IP (CF-Connecting-IP) so the API's rate limits and
+# audit logs see users, not the tunnel.
 #
-# Env (from docker-compose.prod.yml): LT_HOST, LT_REGISTER_USER, LT_REGISTER_HASH
+#   app.{LT_DOMAIN}    -> web:3000    browser-facing app   (Cloudflare Access policy applies)
+#   api.{LT_DOMAIN}    -> api:4000    web server -> API (API_ORIGIN)
+#   files.{LT_DOMAIN}  -> minio:9000  S3 API: browser presigned uploads/downloads
+#
+# Env (from docker-compose.prod.yml): LT_DOMAIN
 
 (security_headers) {
 	header {
@@ -21,42 +23,37 @@
 	}
 }
 
-# ---- web ---------------------------------------------------------------------
-https://{$LT_HOST}:443 {
-	tls {
-		get_certificate tailscale
-	}
-	import security_headers
-	request_body {
-		max_size 2MB
-	}
-	# Public self-registration is open by design in the app (POST /api/auth/register).
-	# Gate the registration PAGE and the API call behind HTTP basic auth until the
-	# owner decides to open signups. Remove this block to open registration.
-	@register path /register /api/auth/register
-	basic_auth @register {
-		{$LT_REGISTER_USER} {$LT_REGISTER_HASH}
-	}
-	reverse_proxy web:3000
+(real_ip) {
+	# Cloudflare puts the visitor's IP in CF-Connecting-IP; pass it on as the
+	# X-Forwarded-For the API trusts (trustProxy: true).
+	header_up X-Forwarded-For {header.CF-Connecting-IP}
+	header_up X-Real-IP {header.CF-Connecting-IP}
 }
 
-# ---- api (reached only by the web container via API_ORIGIN) -------------------
-https://{$LT_HOST}:8443 {
-	tls {
-		get_certificate tailscale
-	}
+# ---- web ---------------------------------------------------------------------
+http://app.{$LT_DOMAIN} {
 	import security_headers
 	request_body {
 		max_size 2MB
 	}
-	reverse_proxy api:4000
+	reverse_proxy web:3000 {
+		import real_ip
+	}
+}
+
+# ---- api (reached by the web container via API_ORIGIN, through Cloudflare) ----
+http://api.{$LT_DOMAIN} {
+	import security_headers
+	request_body {
+		max_size 2MB
+	}
+	reverse_proxy api:4000 {
+		import real_ip
+	}
 }
 
 # ---- object storage (S3 API for presigned POST/GET from the browser) ----------
-https://{$LT_HOST}:9443 {
-	tls {
-		get_certificate tailscale
-	}
+http://files.{$LT_DOMAIN} {
 	request_body {
 		max_size 30MB
 	}
