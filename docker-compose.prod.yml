@@ -74,6 +74,12 @@ services:
       target: runtime
     container_name: loadtopia-prod-api
     restart: unless-stopped
+    # Public resolvers: the hairpin calls (web -> api.<domain>, api -> files.<domain>) must
+    # resolve to Cloudflare regardless of the host/LAN resolver (ISP delegation caches
+    # lagged ~24h after the nameserver move and broke registration — CHANGE_LOG P4-19).
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
     environment:
       NODE_ENV: production
       API_HOST: 0.0.0.0
@@ -123,6 +129,12 @@ services:
       dockerfile: apps/web/Dockerfile
     container_name: loadtopia-prod-web
     restart: unless-stopped
+    # Public resolvers: the hairpin calls (web -> api.<domain>, api -> files.<domain>) must
+    # resolve to Cloudflare regardless of the host/LAN resolver (ISP delegation caches
+    # lagged ~24h after the nameserver move and broke registration — CHANGE_LOG P4-19).
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
     environment:
       NODE_ENV: production
       # Must be https:// and a bare origin (src/lib/api-origin.mjs). Resolves via
