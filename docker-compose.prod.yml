@@ -46,7 +46,7 @@ services:
       - loadtopia_prod_garage_meta:/var/lib/garage/meta
       - loadtopia_prod_garage_data:/var/lib/garage/data
     healthcheck:
-      test: ["CMD", "garage", "-c", "/etc/garage.toml", "status"]
+      test: ["CMD", "/garage", "-c", "/etc/garage.toml", "status"]
       interval: 10s
       timeout: 5s
       retries: 6

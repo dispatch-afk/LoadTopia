@@ -15,7 +15,7 @@ getv(){ grep -E "^$1=" "$ENVF" | head -1 | cut -d= -f2-; }
 BUCKET=$(getv STORAGE_S3_BUCKET); [ -n "$BUCKET" ] || BUCKET=loadtopia-prod
 AK=$(getv STORAGE_S3_ACCESS_KEY_ID); SK=$(getv STORAGE_S3_SECRET_ACCESS_KEY); DOMAIN=$(getv LT_DOMAIN)
 [ -n "$AK" ] && [ -n "$SK" ] && [ -n "$DOMAIN" ] || { echo "missing STORAGE_S3_* / LT_DOMAIN in $ENVF"; exit 1; }
-g(){ docker exec "$C" garage -c /etc/garage.toml "$@"; }
+g(){ docker exec "$C" /garage -c /etc/garage.toml "$@"; }   # scratch image: binary is /garage, no PATH
 ok(){ echo "   [OK]   $1"; }; fail(){ echo "   [FAIL] $1"; exit 1; }
 
 # wait for the node
