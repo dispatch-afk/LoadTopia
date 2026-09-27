@@ -1,0 +1,21 @@
+# Garage (S3-compatible object storage) — single-node self-hosted config for LoadTopia.
+# Secrets are NOT in this file: GARAGE_RPC_SECRET and GARAGE_ADMIN_TOKEN come from
+# the environment (docker-compose.prod.yml <- .env.prod).
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+
+replication_factor = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+
+[s3_api]
+# The API's STORAGE_S3_REGION must equal this value.
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+# Path-style requests only (STORAGE_S3_FORCE_PATH_STYLE=true); root_domain is unused but required.
+root_domain = ".s3.garage.internal"
+
+[admin]
+api_bind_addr = "[::]:3903"

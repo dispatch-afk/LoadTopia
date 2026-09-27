@@ -56,8 +56,8 @@ An unknown value, or a real provider with missing configuration, **fails boot**.
 | Variable | Class | Notes |
 |---|---|---|
 | `STORAGE_S3_REGION`, `STORAGE_S3_BUCKET`, `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY` | Conditional-required | Missing any → boot failure. |
-| `STORAGE_S3_ENDPOINT` | Conditional | **Must be a URL or absent — an empty string fails validation.** Set for MinIO/R2/Spaces; omit for AWS. Must be reachable by the **browser** (presigned URLs embed it). |
-| `STORAGE_S3_FORCE_PATH_STYLE` | Optional | `false`; `true` for MinIO. |
+| `STORAGE_S3_ENDPOINT` | Conditional | **Must be a URL or absent — an empty string fails validation.** Set for Garage/MinIO/R2/Spaces; omit for AWS. Must be reachable by the **browser** (presigned URLs embed it). |
+| `STORAGE_S3_FORCE_PATH_STYLE` | Optional | `false`; `true` for Garage/MinIO. |
 | `STORAGE_SIGNED_URL_TTL_SECONDS` | Optional | `900`, bounded 60–3600. |
 
 ## Web app (`apps/web`)
@@ -72,7 +72,7 @@ No `NEXT_PUBLIC_*` variables exist; nothing is exposed to the browser.
 
 ## Self-hosting compose variables (`.env.prod`, consumed by `docker-compose.prod.yml` only)
 
-`LT_DOMAIN` (your Cloudflare-managed domain; the stack uses `app.`, `api.`, `files.` subdomains), `CF_TUNNEL_TOKEN` (Cloudflare Tunnel connector token — secret), `POSTGRES_PASSWORD`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, optional `STORAGE_S3_BUCKET`, `SESSION_COOKIE_NAME`, `SESSION_TTL_HOURS`, `LOG_LEVEL`, `ROUTING_PROVIDER`, `GEOCODING_PROVIDER`, `GOOGLE_MAPS_API_KEY`.
+`LT_DOMAIN` (your Cloudflare-managed domain; the stack uses `app.`, `api.`, `files.` subdomains), `CF_TUNNEL_TOKEN` (Cloudflare Tunnel connector token — secret), `POSTGRES_PASSWORD`, `GARAGE_RPC_SECRET`, `GARAGE_ADMIN_TOKEN`, `STORAGE_S3_ACCESS_KEY_ID` / `STORAGE_S3_SECRET_ACCESS_KEY` (bucket-scoped Garage key imported by `docker/garage/init.sh`), optional `STORAGE_S3_BUCKET`, `SESSION_COOKIE_NAME`, `SESSION_TTL_HOURS`, `LOG_LEVEL`, `ROUTING_PROVIDER`, `GEOCODING_PROVIDER`, `GOOGLE_MAPS_API_KEY`.
 
 ## Known template issue
 

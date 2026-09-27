@@ -13,12 +13,12 @@ describes how to package, expose, persist, and back it up.
 | | Development (`docker-compose.yml`) | Production (`docker-compose.prod.yml`) |
 |---|---|---|
 | Compose project | `loadtopia` | `loadtopia-prod` |
-| What runs in containers | PostgreSQL only | PostgreSQL, MinIO, API, web, Caddy |
+| What runs in containers | PostgreSQL only | PostgreSQL, Garage (S3), API, web, Caddy, cloudflared |
 | App processes | from source: `pnpm dev` (`:3000` / `:4000`) | built images (`apps/api/Dockerfile`, `apps/web/Dockerfile`) |
 | Env file | `.env` | `.env.prod` |
-| Volumes | `loadtopia_pgdata` | `loadtopia_prod_pgdata`, `loadtopia_prod_minio`, `loadtopia_prod_caddy_*` |
+| Volumes | `loadtopia_pgdata` | `loadtopia_prod_pgdata`, `loadtopia_prod_garage_{meta,data}`, `loadtopia_prod_caddy_*` |
 | Exposure | `localhost` | Cloudflare Tunnel only (outbound connector); nothing published on the host |
-| Providers | all `mock` | `mock` except `STORAGE_PROVIDER=s3` (MinIO) |
+| Providers | all `mock` | `mock` except `STORAGE_PROVIDER=s3` (Garage) |
 
 They never share a volume, a port, or an env file. `docker compose down -v` on
 the dev project cannot touch production data.
@@ -41,8 +41,8 @@ browser ──HTTPS──▶ Cloudflare edge (TLS, WAF, Access policy on app.*) 
                                                                                    Caddy :80  (routes by Host)
                                                                                      ├─ app.<domain>   → web:3000
                                                                                      ├─ api.<domain>   → api:4000
-                                                                                     └─ files.<domain> → minio:9000
-                              internal only: postgres:5432, minio:9001 (console, never published)
+                                                                                     └─ files.<domain> → garage:3900
+                              internal only: postgres:5432, garage admin :3903 (never published)
 ```
 
 Nothing listens on any host interface: `cloudflared` dials **out** to Cloudflare
@@ -97,9 +97,10 @@ cp .env.prod.example .env.prod          # fill LT_DOMAIN, CF_TUNNEL_TOKEN, secre
 chmod 600 .env.prod
 DC="docker compose -f docker-compose.prod.yml --env-file .env.prod"
 $DC pull && $DC build
-$DC up -d postgres minio                 # DB + storage first
+$DC up -d postgres garage                # DB + storage first
 $DC --profile migrate run --rm migrate   # apply committed migrations (one-shot)
-$DC up -d                                # api, web, caddy, cloudflared, minio-init (bucket)
+$DC up -d                                # api, web, caddy, cloudflared
+bash docker/garage/init.sh               # first time only (idempotent): layout, key, bucket, CORS
 $DC ps
 ```
 
@@ -132,7 +133,7 @@ migration = restore the pre-upgrade dump.
 | Data | Volume | Notes |
 |---|---|---|
 | PostgreSQL | `loadtopia_prod_pgdata` | all business, audit, session data |
-| Documents / Rate Confirmation PDFs | `loadtopia_prod_minio` | private bucket `STORAGE_S3_BUCKET` |
+| Documents / Rate Confirmation PDFs | `loadtopia_prod_garage_meta` + `loadtopia_prod_garage_data` | private bucket `STORAGE_S3_BUCKET` (back up both volumes together) |
 | TLS state | `loadtopia_prod_caddy_data` | disposable (re-fetched from tailscaled) |
 
 `docker compose ... down` keeps volumes; `down -v` deletes them. Image rebuilds
@@ -144,11 +145,13 @@ never touch volumes. Test: `docker compose ... restart` → data intact.
 # backup
 mkdir -p /srv/loadtopia/backups && cd /srv/loadtopia/backups
 docker exec loadtopia-prod-postgres pg_dump -U loadtopia -Fc loadtopia > pg_$(date +%F_%H%M).dump
-docker run --rm -v loadtopia_prod_minio:/data:ro -v "$PWD":/bk alpine tar czf /bk/minio_$(date +%F_%H%M).tgz -C /data .
+docker run --rm -v loadtopia_prod_garage_meta:/meta:ro -v loadtopia_prod_garage_data:/data:ro -v "$PWD":/bk alpine tar czf /bk/garage_$(date +%F_%H%M).tgz -C / meta data
 # restore (into a STOPPED api)
 docker compose -f docker-compose.prod.yml --env-file .env.prod stop api web
 docker exec -i loadtopia-prod-postgres pg_restore -U loadtopia -d loadtopia --clean --if-exists < pg_<stamp>.dump
-docker run --rm -v loadtopia_prod_minio:/data -v "$PWD":/bk alpine sh -c "cd /data && tar xzf /bk/minio_<stamp>.tgz"
+docker compose -f docker-compose.prod.yml --env-file .env.prod stop garage
+docker run --rm -v loadtopia_prod_garage_meta:/meta -v loadtopia_prod_garage_data:/data -v "$PWD":/bk alpine sh -c "cd / && tar xzf /bk/garage_<stamp>.tgz"
+docker compose -f docker-compose.prod.yml --env-file .env.prod start garage
 docker compose -f docker-compose.prod.yml --env-file .env.prod start api web
 ```
 Schedule the backup with cron and copy dumps **off the host**. Do a restore
@@ -159,7 +162,7 @@ with scripts is the next documentation deliverable.)
 
 - API and web run with `NODE_ENV=production`; `SESSION_COOKIE_SECURE=true`
   (the API refuses to boot otherwise); `CORS_ORIGINS` = exactly `https://app.<domain>`.
-- No container publishes a port on the host. Postgres and MinIO are internal
+- No container publishes a port on the host. Postgres and Garage are internal
   only; Caddy is reachable only from `cloudflared`; ingress is outbound-only.
 - Cloudflare Access (email OTP / SSO allow-list) gates `app.<domain>` before
   the application login — a second factor with nothing to install.
@@ -170,12 +173,15 @@ with scripts is the next documentation deliverable.)
   policies for the web app (the app sets none itself) and caps request bodies
   (2 MB app/api, 30 MB storage — document uploads are ≤ 25 MiB).
 - Cloudflare WAF, bot and DDoS protection apply to all three hostnames.
-- Secrets live only in `.env.prod` (mode 600, git-ignored): DB and MinIO
+- Secrets live only in `.env.prod` (mode 600, git-ignored): DB, Garage and S3-key
   credentials are random per install; the tunnel token is a secret too.
   Dev credentials (`loadtopia_dev_pw`) are never reused.
-- MinIO root credentials are used by the API for the PoC; before real
-  production, create a scoped MinIO user/policy (`GetObject`, `PutObject`,
-  `HeadObject` on the one bucket) and put those in `STORAGE_S3_*`.
+- Object storage is Garage; the API uses a **bucket-scoped access key**
+  (imported by `docker/garage/init.sh`), never a root credential. The Garage
+  admin token and RPC secret live only in `.env.prod`.
+- MinIO is deliberately not used: its container images were withdrawn from
+  public registries in September 2026, which makes it unsuitable for a
+  reproducible self-hosted deployment.
 
 Host-level (outside this repo): `ufw` default-deny inbound (SSH from LAN and
 from your Tailscale admin network only), SSH key-only, `fail2ban`,

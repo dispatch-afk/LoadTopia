@@ -8,7 +8,7 @@
 #
 #   app.{LT_DOMAIN}    -> web:3000    browser-facing app   (Cloudflare Access policy applies)
 #   api.{LT_DOMAIN}    -> api:4000    web server -> API (API_ORIGIN)
-#   files.{LT_DOMAIN}  -> minio:9000  S3 API: browser presigned uploads/downloads
+#   files.{LT_DOMAIN}  -> garage:3900 S3 API: browser presigned uploads/downloads
 #
 # Env (from docker-compose.prod.yml): LT_DOMAIN
 
@@ -57,5 +57,5 @@ http://files.{$LT_DOMAIN} {
 	request_body {
 		max_size 30MB
 	}
-	reverse_proxy minio:9000
+	reverse_proxy garage:3900
 }
