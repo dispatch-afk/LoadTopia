@@ -1,0 +1,64 @@
+# LoadTopia self-hosted reverse proxy (Caddy 2).
+# Terminates TLS for three origins on ONE tailnet hostname, all with the
+# Let's Encrypt certificate that tailscaled obtains for this machine
+# (tls get_certificate tailscale — needs the tailscaled socket mounted and
+# "HTTPS Certificates" enabled in the tailnet DNS settings).
+#
+#   https://{LT_HOST}        -> web  (Next.js)        browser-facing app
+#   https://{LT_HOST}:8443   -> api  (Fastify)        web server -> API (API_ORIGIN)
+#   https://{LT_HOST}:9443   -> minio S3 API          browser presigned uploads/downloads
+#
+# Env (from docker-compose.prod.yml): LT_HOST, LT_REGISTER_USER, LT_REGISTER_HASH
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+}
+
+# ---- web ---------------------------------------------------------------------
+https://{$LT_HOST}:443 {
+	tls {
+		get_certificate tailscale
+	}
+	import security_headers
+	request_body {
+		max_size 2MB
+	}
+	# Public self-registration is open by design in the app (POST /api/auth/register).
+	# Gate the registration PAGE and the API call behind HTTP basic auth until the
+	# owner decides to open signups. Remove this block to open registration.
+	@register path /register /api/auth/register
+	basic_auth @register {
+		{$LT_REGISTER_USER} {$LT_REGISTER_HASH}
+	}
+	reverse_proxy web:3000
+}
+
+# ---- api (reached only by the web container via API_ORIGIN) -------------------
+https://{$LT_HOST}:8443 {
+	tls {
+		get_certificate tailscale
+	}
+	import security_headers
+	request_body {
+		max_size 2MB
+	}
+	reverse_proxy api:4000
+}
+
+# ---- object storage (S3 API for presigned POST/GET from the browser) ----------
+https://{$LT_HOST}:9443 {
+	tls {
+		get_certificate tailscale
+	}
+	request_body {
+		max_size 30MB
+	}
+	reverse_proxy minio:9000
+}

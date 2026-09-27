@@ -1,0 +1,186 @@
+# LoadTopia — self-hosted PRODUCTION stack (audit §K, gaps G-1..G-5).
+#
+# Deliberately separate from docker-compose.yml (dev):
+#   - project name `loadtopia-prod`, volume names `loadtopia_prod_*`
+#   - nothing publishes to the LAN; Caddy binds ONLY to the Tailscale IP
+#   - Postgres and MinIO are reachable only on the internal network
+#   - migrations run as a one-shot job (`--profile migrate`), never at API start
+#
+#   cp .env.prod.example .env.prod   # then fill in (scripts/phase4c does this)
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod build
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod --profile migrate run --rm migrate
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+#
+# NEVER run `down -v` against this file — it deletes production data.
+name: loadtopia-prod
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: loadtopia-prod-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: loadtopia
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env.prod}
+      POSTGRES_DB: loadtopia
+    volumes:
+      - loadtopia_prod_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loadtopia -d loadtopia"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: loadtopia-prod-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      # Browser talks to the S3 API directly (presigned POST/GET) — allow ONLY the web origin.
+      MINIO_API_CORS_ALLOW_ORIGIN: https://${LT_HOST:?}
+    volumes:
+      - loadtopia_prod_minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: create the private bucket. Idempotent.
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
+      mc mb --ignore-existing local/$$STORAGE_S3_BUCKET &&
+      mc anonymous set none local/$$STORAGE_S3_BUCKET &&
+      echo bucket-ready"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      STORAGE_S3_BUCKET: ${STORAGE_S3_BUCKET:-loadtopia-prod}
+    restart: "no"
+
+  # One-shot migration job (profile: migrate). Uses the repo's own `migrate` image target.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: migrate
+    profiles: ["migrate"]
+    environment:
+      DATABASE_URL: postgresql://loadtopia:${POSTGRES_PASSWORD}@postgres:5432/loadtopia?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runtime
+    container_name: loadtopia-prod-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: "4000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgresql://loadtopia:${POSTGRES_PASSWORD}@postgres:5432/loadtopia?schema=public
+      # Browser origin (web). Must match exactly.
+      CORS_ORIGINS: https://${LT_HOST}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-loadtopia_session}
+      SESSION_COOKIE_SECURE: "true"
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
+      # Providers: everything mock EXCEPT storage (real S3-compatible MinIO).
+      ROUTING_PROVIDER: ${ROUTING_PROVIDER:-mock}
+      GEOCODING_PROVIDER: ${GEOCODING_PROVIDER:-mock}
+      PRICING_PROVIDER: mock
+      CARRIER_VERIFICATION_PROVIDER: mock
+      PAYMENT_PROVIDER: mock
+      NOTIFICATION_PROVIDER: mock
+      TRACKING_PROVIDER: mock
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      STORAGE_PROVIDER: s3
+      # Public (browser-reachable) S3 endpoint — presigned URLs embed it.
+      STORAGE_S3_ENDPOINT: https://${LT_HOST}:9443
+      STORAGE_S3_REGION: us-east-1
+      STORAGE_S3_BUCKET: ${STORAGE_S3_BUCKET:-loadtopia-prod}
+      STORAGE_S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      STORAGE_S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      STORAGE_S3_FORCE_PATH_STYLE: "true"
+      STORAGE_SIGNED_URL_TTL_SECONDS: "900"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/api/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: loadtopia-prod-web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # Must be https:// and a bare origin (src/lib/api-origin.mjs). Resolves to
+      # the caddy container via the network alias below.
+      API_ORIGIN: https://${LT_HOST}:8443
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-loadtopia_session}
+    depends_on:
+      api:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2
+    container_name: loadtopia-prod-caddy
+    restart: unless-stopped
+    # Bind ONLY on the Tailscale interface — invisible to the LAN and the internet.
+    ports:
+      - "${TS_IP:?}:443:443"
+      - "${TS_IP}:8443:8443"
+      - "${TS_IP}:9443:9443"
+    environment:
+      LT_HOST: ${LT_HOST}
+      LT_REGISTER_USER: ${LT_REGISTER_USER:?}
+      LT_REGISTER_HASH: ${LT_REGISTER_HASH:?}
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - loadtopia_prod_caddy_data:/data
+      - loadtopia_prod_caddy_config:/config
+      # Lets Caddy fetch/renew the tailnet certificate from tailscaled.
+      - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock
+    networks:
+      default:
+        aliases:
+          # Containers (web -> API_ORIGIN, api -> STORAGE_S3_ENDPOINT) resolve the
+          # public hostname to Caddy internally; TLS SNI still matches the cert.
+          - ${LT_HOST}
+    depends_on:
+      - web
+      - api
+      - minio
+
+volumes:
+  loadtopia_prod_pgdata:
+    name: loadtopia_prod_pgdata
+  loadtopia_prod_minio:
+    name: loadtopia_prod_minio
+  loadtopia_prod_caddy_data:
+    name: loadtopia_prod_caddy_data
+  loadtopia_prod_caddy_config:
+    name: loadtopia_prod_caddy_config
