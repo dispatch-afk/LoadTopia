@@ -21,7 +21,9 @@ log(){ echo "[$(date -u +%FT%TZ)] $*"; }
 
 if [ "$MODE" != "--into-production" ]; then
   log "DRILL: restoring into scratch database loadtopia_restore_test"
-  docker exec loadtopia-prod-postgres psql -U loadtopia -d postgres -Atc "drop database if exists loadtopia_restore_test; create database loadtopia_restore_test;"
+  # DROP/CREATE DATABASE cannot run inside a transaction block -> one statement per psql call
+  docker exec loadtopia-prod-postgres psql -U loadtopia -d postgres -Atc "drop database if exists loadtopia_restore_test;"
+  docker exec loadtopia-prod-postgres psql -U loadtopia -d postgres -Atc "create database loadtopia_restore_test;"
   docker exec -i loadtopia-prod-postgres pg_restore -U loadtopia -d loadtopia_restore_test --no-owner < "$SRC/pg.dump"
   echo "--- row counts in restored scratch DB (compare with $SRC/manifest.txt):"
   docker exec loadtopia-prod-postgres psql -U loadtopia -d loadtopia_restore_test -Atc \
