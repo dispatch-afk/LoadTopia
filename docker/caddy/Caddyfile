@@ -1,0 +1,61 @@
+# LoadTopia self-hosted reverse proxy (Caddy 2) — behind a Cloudflare Tunnel.
+#
+# TLS is terminated at Cloudflare's edge; cloudflared delivers plain HTTP to
+# this container over the (encrypted) tunnel. Caddy therefore serves http://
+# only, routes by Host header, adds security headers, caps request bodies, and
+# forwards the real client IP (CF-Connecting-IP) so the API's rate limits and
+# audit logs see users, not the tunnel.
+#
+#   app.{LT_DOMAIN}    -> web:3000    browser-facing app   (Cloudflare Access policy applies)
+#   api.{LT_DOMAIN}    -> api:4000    web server -> API (API_ORIGIN)
+#   files.{LT_DOMAIN}  -> garage:3900 S3 API: browser presigned uploads/downloads
+#
+# Env (from docker-compose.prod.yml): LT_DOMAIN
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+}
+
+(real_ip) {
+	# Cloudflare puts the visitor's IP in CF-Connecting-IP; pass it on as the
+	# X-Forwarded-For the API trusts (trustProxy: true).
+	header_up X-Forwarded-For {header.CF-Connecting-IP}
+	header_up X-Real-IP {header.CF-Connecting-IP}
+}
+
+# ---- web ---------------------------------------------------------------------
+http://app.{$LT_DOMAIN} {
+	import security_headers
+	request_body {
+		max_size 2MB
+	}
+	reverse_proxy web:3000 {
+		import real_ip
+	}
+}
+
+# ---- api (reached by the web container via API_ORIGIN, through Cloudflare) ----
+http://api.{$LT_DOMAIN} {
+	import security_headers
+	request_body {
+		max_size 2MB
+	}
+	reverse_proxy api:4000 {
+		import real_ip
+	}
+}
+
+# ---- object storage (S3 API for presigned POST/GET from the browser) ----------
+http://files.{$LT_DOMAIN} {
+	request_body {
+		max_size 30MB
+	}
+	reverse_proxy garage:3900
+}

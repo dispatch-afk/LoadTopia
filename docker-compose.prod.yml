@@ -1,0 +1,184 @@
+# LoadTopia — self-hosted PRODUCTION stack (audit §K, gaps G-1..G-5).
+#
+# Deliberately separate from docker-compose.yml (dev):
+#   - project name `loadtopia-prod`, volume names `loadtopia_prod_*`
+#   - NOTHING is published on any host interface: ingress is a Cloudflare Tunnel
+#     (outbound-only cloudflared); TLS terminates at Cloudflare's edge
+#   - Postgres and Garage (object storage) are reachable only on the internal network
+#   - migrations run as a one-shot job (`--profile migrate`), never at API start
+#
+#   cp .env.prod.example .env.prod   # then fill in (scripts/phase4c does this)
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod build
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod --profile migrate run --rm migrate
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+#   bash docker/garage/init.sh   # first time: layout, key, bucket, CORS
+#
+# NEVER run `down -v` against this file — it deletes production data.
+name: loadtopia-prod
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: loadtopia-prod-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: loadtopia
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env.prod}
+      POSTGRES_DB: loadtopia
+    volumes:
+      - loadtopia_prod_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loadtopia -d loadtopia"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  garage:
+    # S3-compatible object storage (MinIO images were withdrawn from public registries in Sept 2026).
+    image: dxflrs/garage:v2.3.0
+    container_name: loadtopia-prod-garage
+    restart: unless-stopped
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:?}
+    volumes:
+      - ./docker/garage/garage.toml:/etc/garage.toml:ro
+      - loadtopia_prod_garage_meta:/var/lib/garage/meta
+      - loadtopia_prod_garage_data:/var/lib/garage/data
+    healthcheck:
+      test: ["CMD", "/garage", "-c", "/etc/garage.toml", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    # One-time layout/key/bucket/CORS setup: bash docker/garage/init.sh (idempotent; phase4c runs it)
+
+  # One-shot migration job (profile: migrate). Uses the repo's own `migrate` image target.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: migrate
+    profiles: ["migrate"]
+    environment:
+      DATABASE_URL: postgresql://loadtopia:${POSTGRES_PASSWORD}@postgres:5432/loadtopia?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runtime
+    container_name: loadtopia-prod-api
+    restart: unless-stopped
+    # Public resolvers: the hairpin calls (web -> api.<domain>, api -> files.<domain>) must
+    # resolve to Cloudflare regardless of the host/LAN resolver (ISP delegation caches
+    # lagged ~24h after the nameserver move and broke registration — CHANGE_LOG P4-19).
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
+    environment:
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: "4000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgresql://loadtopia:${POSTGRES_PASSWORD}@postgres:5432/loadtopia?schema=public
+      # Browser origin (web). Must match exactly.
+      CORS_ORIGINS: https://app.${LT_DOMAIN}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-loadtopia_session}
+      SESSION_COOKIE_SECURE: "true"
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
+      # Providers: everything mock EXCEPT storage (real S3-compatible Garage).
+      ROUTING_PROVIDER: ${ROUTING_PROVIDER:-mock}
+      GEOCODING_PROVIDER: ${GEOCODING_PROVIDER:-mock}
+      PRICING_PROVIDER: mock
+      CARRIER_VERIFICATION_PROVIDER: mock
+      PAYMENT_PROVIDER: mock
+      NOTIFICATION_PROVIDER: mock
+      TRACKING_PROVIDER: mock
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      STORAGE_PROVIDER: s3
+      # Public (browser-reachable) S3 endpoint — presigned URLs embed it.
+      STORAGE_S3_ENDPOINT: https://files.${LT_DOMAIN}
+      # Must equal s3_region in docker/garage/garage.toml
+      STORAGE_S3_REGION: garage
+      STORAGE_S3_BUCKET: ${STORAGE_S3_BUCKET:-loadtopia-prod}
+      # Bucket-scoped key created by docker/garage/init.sh (not a root credential)
+      STORAGE_S3_ACCESS_KEY_ID: ${STORAGE_S3_ACCESS_KEY_ID:?}
+      STORAGE_S3_SECRET_ACCESS_KEY: ${STORAGE_S3_SECRET_ACCESS_KEY:?}
+      STORAGE_S3_FORCE_PATH_STYLE: "true"
+      STORAGE_SIGNED_URL_TTL_SECONDS: "900"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/api/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: loadtopia-prod-web
+    restart: unless-stopped
+    # Public resolvers: the hairpin calls (web -> api.<domain>, api -> files.<domain>) must
+    # resolve to Cloudflare regardless of the host/LAN resolver (ISP delegation caches
+    # lagged ~24h after the nameserver move and broke registration — CHANGE_LOG P4-19).
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
+    environment:
+      NODE_ENV: production
+      # Must be https:// and a bare origin (src/lib/api-origin.mjs). Resolves via
+      # public DNS -> Cloudflare -> tunnel -> caddy -> api (hairpin; see SELF_HOSTING.md).
+      API_ORIGIN: https://api.${LT_DOMAIN}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-loadtopia_session}
+    depends_on:
+      api:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2
+    container_name: loadtopia-prod-caddy
+    restart: unless-stopped
+    # No `ports:` — reachable only from cloudflared on the internal network.
+    environment:
+      LT_DOMAIN: ${LT_DOMAIN}
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - loadtopia_prod_caddy_data:/data
+      - loadtopia_prod_caddy_config:/config
+    depends_on:
+      - web
+      - api
+      - garage
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: loadtopia-prod-cloudflared
+    restart: unless-stopped
+    # Outbound-only connector. Public hostnames -> http://caddy:80 are configured
+    # in the Cloudflare Zero Trust dashboard (Networks > Tunnels), see SELF_HOSTING.md §4.
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN:?set in .env.prod}
+    depends_on:
+      - caddy
+
+volumes:
+  loadtopia_prod_pgdata:
+    name: loadtopia_prod_pgdata
+  loadtopia_prod_garage_meta:
+    name: loadtopia_prod_garage_meta
+  loadtopia_prod_garage_data:
+    name: loadtopia_prod_garage_data
+  loadtopia_prod_caddy_data:
+    name: loadtopia_prod_caddy_data
+  loadtopia_prod_caddy_config:
+    name: loadtopia_prod_caddy_config
